@@ -10,43 +10,12 @@ input and makes no model call.
 import argparse
 import json
 import os
-import subprocess
 import sys
-import tarfile
 import tempfile
 from pathlib import Path
 
 from . import enrich, review, scope
-
-MAX_DIFF_BYTES = 150_000
-
-
-def git(repo, *args):
-    p = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
-    if p.returncode:
-        raise SystemExit(f"git {' '.join(args)}: {p.stderr.strip()[:300]}")
-    return p.stdout
-
-
-def extract_tree(repo, ref, dest):
-    """`git archive ref` into dest. Nothing touches the working checkout."""
-    archive = subprocess.Popen(["git", "-C", str(repo), "archive", "--format=tar", ref], stdout=subprocess.PIPE)
-    with tarfile.open(fileobj=archive.stdout, mode="r|") as tar:
-        tar.extractall(dest, filter="data")
-    if archive.wait():
-        raise SystemExit(f"git archive {ref} failed")
-
-
-def build_input(branch, title, body, diff, facts=None):
-    """The reviewer's input: target branch, title, author description, diff, then tooling facts."""
-    if len(diff) > MAX_DIFF_BYTES:
-        diff = diff[:MAX_DIFF_BYTES] + f"\n[... diff truncated at {MAX_DIFF_BYTES} bytes of {len(diff)} ...]"
-    parts = ["# Pull request", "", f"Target branch: {branch}", f"Title: {title}", "",
-             "## Description (written by the author)", "", body or "", "", "## Diff", "",
-             "```diff", diff.rstrip("\n"), "```"]
-    if facts:
-        parts += ["", "## Repository facts (computed by tooling, not written by the author)", "", facts]
-    return "\n".join(parts) + "\n"
+from .change import build_input, diff_from_merge_base, extract_tree
 
 
 def main(argv=None):
@@ -70,16 +39,17 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     repo = Path(args.repo).resolve()
-    cfg = scope.load(repo)
-    merge_base = git(repo, "merge-base", args.base, args.head).strip()
-    diff = git(repo, "diff", merge_base, args.head)
+    try:
+        cfg = scope.load(repo)
+        merge_base, head_sha, diff = diff_from_merge_base(repo, args.base, args.head)
+    except RuntimeError as e:
+        ap.exit(2, f"{e}\n")
     body = Path(args.body_file).read_text() if args.body_file else ""
     branch = args.branch or args.base
 
     skipped = scope.out_of_scope(diff, cfg.get("ignore", []))
     if skipped and not args.dry_run:
-        result = scope.skipped_result(skipped)
-        return emit(result, args.out)
+        return emit(scope.skipped_result(skipped), args.out)
 
     facts = None
     if not args.no_enrich:
@@ -96,7 +66,7 @@ def main(argv=None):
     result = review.review(user, scope.context_text(repo, cfg), args.model, args.api, args.base_url,
                            args.effort, enriched=facts is not None, timeout=args.timeout,
                            attempts=args.attempts)
-    result["_meta"].update({"base": merge_base, "head": git(repo, "rev-parse", args.head).strip()})
+    result["_meta"].update({"base": merge_base, "head": head_sha})
     return emit(result, args.out)
 
 

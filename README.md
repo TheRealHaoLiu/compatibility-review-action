@@ -14,27 +14,53 @@ A CI bot that reads a pull request and appends an upgrade-compatibility note to 
 
 ## Status
 
-- `compat_review/` is the reviewer at version v9: the prompt, the output schema, the rule, the repository-facts builder, and a command that reviews one change in a git checkout.
+- `compat_review/` is the reviewer at version v9: the prompt, the output schema, the rule, the repository-facts builder, a command that reviews one change in a checkout, and a webhook service that runs as a GitHub App.
 - `docs/` is the published summary of v9.
-- The GitHub Action that posts the note and the gradable comment is next; `.github/workflows/` is empty until then.
 - The evaluation harness and its data live in a private repository, because the benchmark references changes that had not shipped when they were labeled.
 
-## Run it on a change
+## Run the webhook service as a GitHub App
 
-Python 3.11 or newer; no dependencies for OpenAI-compatible endpoints, `pip install anthropic` for the Anthropic API.
+The service receives `pull_request` events, reviews each new diff once, writes the note into the PR description, and posts one gradable comment per review. One process, standard library plus PyJWT, with bare mirrors of the repositories it reviews under its data directory.
+
+1. **Create a GitHub App** (Settings, Developer settings, GitHub Apps, New GitHub App). Webhook URL: your service's `/webhook` (for a trial, a smee.io channel). Set a webhook secret. Permissions: Pull requests read and write, Contents read, Metadata read. Subscribe to the Pull request event. Generate a private key and note the App ID. Install the App on the repositories to review.
+2. **Run it.**
+
+   ```sh
+   pip install ".[service]"
+   export GITHUB_APP_ID=12345
+   export GITHUB_APP_PRIVATE_KEY_FILE=./app.pem
+   export GITHUB_WEBHOOK_SECRET=...
+   export OPENAI_BASE_URL=https://your-endpoint   # any OpenAI-compatible gateway
+   export OPENAI_API_KEY=...
+   export COMPAT_REVIEW_MODEL=your-model-name
+   compatibility-review-service --port 8000          # add --no-post to review without writing to GitHub
+   ```
+
+   For a trial on a laptop, forward the App's webhooks to it: `npx smee-client -u https://smee.io/<channel> -t http://localhost:8000/webhook`.
+3. **Review one pull request by hand** with `compatibility-review-service --once owner/repo#123`. With `GITHUB_TOKEN` set to a personal token, this works before any App exists.
+
+What the service does per event: verify the signature, queue the PR, fetch the mirror and the PR head, diff from the merge base, repository facts from the tree at the merge base, read the repository's `.compatibility-review.toml` at that commit, one model call, then the note and the comment. The result JSON lands in `data/reviews/<owner>-<repo>/<number>-<diff sha>.json`; a diff with the same sha256 is not reviewed again, so a re-push without changes costs nothing. Draft PRs are skipped unless `COMPAT_REVIEW_SKIP_DRAFTS=0`. Other settings: `COMPAT_REVIEW_API` (`responses`, `chat`, `anthropic`), `COMPAT_REVIEW_EFFORT`, `COMPAT_REVIEW_BASE_URL`, `COMPAT_REVIEW_DATA`, `COMPAT_REVIEW_HEADERS` (a JSON object of extra request headers for a gateway).
+
+A `Dockerfile` builds the service image; mount `/data` and pass the environment above.
+
+### What it posts
+
+In the PR description, between `<!-- compatibility-review:begin -->` and `<!-- compatibility-review:end -->`: the verdict, the summary, the setup that stops working and how, and the version and commit reviewed. The section is replaced on each review, so the description holds one note.
+
+As a comment: the same verdict and reason, the prompt, rule and model versions, the head and base SHAs reviewed, and the invitation to react 👍 or 👎 and reply with the reason. The comment ends with a hidden `<!-- compatibility-review {...} -->` record, so grading the bot later needs nothing but the GitHub API: list the bot's comments, read the reactions and replies, join on the record.
+
+## Run it on a change by hand
 
 ```sh
 pip install .
-export OPENAI_BASE_URL=https://your-endpoint   # any OpenAI-compatible gateway
+export OPENAI_BASE_URL=https://your-endpoint
 export OPENAI_API_KEY=...
 compatibility-review --repo . --base origin/main --head HEAD \
     --title "Deny link-local addresses in the notification allow list" \
     --body-file pr-body.md --model your-model-name
 ```
 
-The diff runs from the merge base of `--base` and `--head` to `--head`; the repository facts come from the tree at that merge base. Output is one JSON object: the model's findings and answers, the derived `verdict` (`breaking`, `notable`, `none`) and `color`, and a `_meta` block with the prompt and rule versions, the model, token usage, and the base and head commits reviewed.
-
-Options: `--api responses|chat|anthropic` (default `responses`), `--effort low|medium|high` (default `medium`), `--no-enrich` to send the diff alone, `--dry-run` to print the assembled input without calling a model, `--out FILE` to save the JSON. `COMPAT_REVIEW_HEADERS` may hold a JSON object of extra request headers for a gateway.
+The diff runs from the merge base of `--base` and `--head` to `--head`; the repository facts come from the tree at that merge base. Output is one JSON object: the model's findings and answers, the derived `verdict` (`breaking`, `notable`, `none`) and `color`, and a `_meta` block with the prompt and rule versions, the model, token usage, and the commits reviewed. `--dry-run` prints the assembled input without calling a model; `--no-enrich` sends the diff alone; `--api`, `--effort`, `--out` as for the service.
 
 ## Repository settings
 
@@ -49,7 +75,7 @@ context = "..."              # or: context_file = "docs/compatibility-context.md
 ignore = [".github/**", "**/tests/**", "docs/**", "*.md"]
 ```
 
-Without the file, the generic product paragraph in `compat_review/context.md` is used and nothing is ignored.
+Without the file, the generic product paragraph in `compat_review/context.md` is used and nothing is ignored. The service reads the file at the merge base of the change, so a PR cannot change its own review settings.
 
 ## Layout
 
@@ -60,16 +86,15 @@ Without the file, the generic product paragraph in `compat_review/context.md` is
 | `compat_review/derive.py` | The fixed rule from answers to verdict |
 | `compat_review/enrich.py` | Repository facts: definitions around each change and one hop of callers (Python only for now) |
 | `compat_review/scope.py` | Repository settings and path ignores |
+| `compat_review/change.py` | Diff from the merge base, tree extraction, the assembled input |
 | `compat_review/review.py` | The model call (Responses, Chat Completions, or Anthropic Messages) |
-| `compat_review/cli.py` | `compatibility-review`: diff and facts from a git checkout, then the review |
+| `compat_review/cli.py` | `compatibility-review`: one change in a checkout |
+| `compat_review/service.py` | `compatibility-review-service`: the webhook server and worker |
+| `compat_review/github.py` | GitHub App tokens and the REST calls used |
+| `compat_review/post.py` | The note and the gradable comment |
+| `compat_review/mirror.py` | Bare mirrors of reviewed repositories |
 | `tests/` | `python -m unittest discover -s tests` |
 | `docs/` | The published summary |
-
-## Planned action
-
-- Runs on `pull_request` and appends the note to the PR description.
-- Posts one comment per review carrying the bot version, the head and base SHA reviewed, and the verdict with its reason, and invites a thumbs up or thumbs down plus a reply saying why. Those reactions and replies are read back by a script to grade the bot per repository.
-- Caches on the diff hash, so a re-push without changes costs nothing.
 
 ## License
 
