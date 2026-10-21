@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "compatibility-review"
+version = "0.1.0"
+description = "An upgrade-compatibility note (Red / Yellow / Green) for pull requests"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.40"]
+
+[project.scripts]
+compatibility-review = "compat_review.cli:main"
+
+[tool.setuptools]
+packages = ["compat_review"]
+
+[tool.setuptools.package-data]
+compat_review = ["*.md", "*.json"]

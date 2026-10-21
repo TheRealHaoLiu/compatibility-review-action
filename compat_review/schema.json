@@ -1,0 +1,10 @@
+{"type":"object","additionalProperties":false,"required":["findings","summary","q_changes_existing_path","q_breaking_setup","q_mechanism","q_prevalence","q_auto_preserved","q_widens_access_or_changes_output"],"properties":{
+"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["who_breaks","how","mitigation","evidence"],"properties":{
+"who_breaks":{"type":"string"},"how":{"type":"string"},"mitigation":{"type":"string"},"evidence":{"type":"string"}}}},
+"summary":{"type":"string"},
+"q_changes_existing_path":{"type":"string","enum":["yes","no"]},
+"q_breaking_setup":{"type":"string"},
+"q_mechanism":{"type":"string","enum":["restricts_stored_at_runtime","restricts_stored_on_resave","restricts_new_input_only","permission","removed","default","output","other","none"]},
+"q_prevalence":{"type":"string","enum":["common","uncommon","rare","n/a"]},
+"q_auto_preserved":{"type":"string","enum":["yes","no","n/a"]},
+"q_widens_access_or_changes_output":{"type":"string","enum":["yes","no"]}}}
