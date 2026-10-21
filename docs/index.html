@@ -1,0 +1,438 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Compat-review v9 Summary</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column (72ch) on cool paper; figures sit full column width; semantic Red/Yellow/Green carry the data, a steel-blue accent carries structure. */
+:root {
+  --bg: #f4f6f9;
+  --surface: #ffffff;
+  --fg: #1b2330;
+  --muted: #5d6878;
+  --line: #d8dee7;
+  --accent: #2b5f8c;
+  --accent-soft: #e2ecf5;
+  --red: #c4382b;
+  --red-soft: #fbe6e3;
+  --yellow: #b1740a;
+  --yellow-soft: #fdf0d2;
+  --green: #2c7a4d;
+  --green-soft: #dff1e5;
+  --font-display: 'Bricolage Grotesque', 'Helvetica Neue', Arial, sans-serif;
+  --font-body: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #131821; --surface: #1b222d; --fg: #e7ecf3; --muted: #9ba7b8; --line: #2c3745;
+    --accent: #86b7e3; --accent-soft: #1f3348;
+    --red: #f07f72; --red-soft: #3b1f1c;
+    --yellow: #e5b65e; --yellow-soft: #3a2e14;
+    --green: #74c795; --green-soft: #1a3326;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #131821; --surface: #1b222d; --fg: #e7ecf3; --muted: #9ba7b8; --line: #2c3745;
+  --accent: #86b7e3; --accent-soft: #1f3348;
+  --red: #f07f72; --red-soft: #3b1f1c;
+  --yellow: #e5b65e; --yellow-soft: #3a2e14;
+  --green: #74c795; --green-soft: #1a3326;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.55;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 64px;
+}
+.page { max-width: 860px; margin: 0 auto; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; line-height: 1.15; margin: 0; }
+h1 { font-size: clamp(32px, 5vw, 46px); font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: clamp(22px, 3vw, 28px); font-weight: 700; }
+h3 { font-size: 17px; font-weight: 600; }
+p { margin: 0; max-width: 72ch; }
+a { color: var(--accent); }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+header.hero { padding-block: 56px 28px; display: grid; gap: 18px; border-bottom: 1px solid var(--line); }
+.hero .lead { font-size: 19px; line-height: 1.5; max-width: 62ch; }
+.reco { display: inline-flex; align-items: center; gap: 10px; padding: 8px 14px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 600; font-size: 14px; width: fit-content; }
+.reco::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 8px; }
+.kpi { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; display: grid; gap: 4px; }
+.kpi .v { font-family: var(--font-display); font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1; }
+.kpi .l { font-size: 13px; color: var(--muted); }
+.kpi.red .v { color: var(--red); } .kpi.green .v { color: var(--green); } .kpi.yellow .v { color: var(--yellow); } .kpi.accent .v { color: var(--accent); }
+section { padding-block: 40px 8px; display: grid; gap: 20px; }
+section + section { border-top: 1px solid var(--line); margin-top: 32px; }
+.sec-head { display: grid; gap: 6px; }
+.prose { display: grid; gap: 14px; }
+.prose b { font-weight: 600; }
+figure { margin: 0; display: grid; gap: 10px; }
+figcaption { font-size: 13px; color: var(--muted); max-width: 72ch; }
+/* verdict cards */
+.verdicts { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+.verdict { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: grid; gap: 10px; align-content: start; border-top: 5px solid var(--c); }
+.verdict.red { --c: var(--red); } .verdict.yellow { --c: var(--yellow); } .verdict.green { --c: var(--green); }
+.verdict h3 { color: var(--c); display: flex; align-items: center; gap: 8px; }
+.verdict h3::before { content: ""; width: 12px; height: 12px; border-radius: 50%; background: var(--c); }
+.verdict p { font-size: 14.5px; }
+.verdict .act { font-size: 13.5px; padding-top: 8px; border-top: 1px dashed var(--line); color: var(--muted); }
+.verdict .act b { color: var(--fg); }
+/* pipeline */
+.pipe { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; }
+.step { flex: 1 1 150px; min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: grid; gap: 4px; align-content: start; position: relative; }
+.step .t { font-weight: 600; font-size: 14.5px; }
+.step .d { font-size: 13px; color: var(--muted); }
+.step.model { border-color: var(--accent); background: var(--accent-soft); }
+.step.model .d { color: var(--fg); }
+.arrow { flex: 0 0 auto; align-self: center; color: var(--muted); display: grid; place-items: center; }
+.arrow svg { width: 18px; height: 18px; }
+@media (max-width: 560px) { .pipe { flex-direction: column; } .arrow svg { transform: rotate(90deg); } }
+/* questions */
+.qs { display: grid; gap: 8px; counter-reset: q; list-style: none; padding: 0; margin: 0; }
+.qs li { display: grid; grid-template-columns: 34px 1fr; gap: 12px; align-items: start; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-size: 15px; }
+.qs li::before { counter-increment: q; content: counter(q); font-family: var(--font-mono); font-weight: 500; color: var(--accent); background: var(--accent-soft); border-radius: 6px; width: 34px; height: 34px; display: grid; place-items: center; }
+.qs li.new { border-color: var(--accent); }
+.qs .tag { display: inline-block; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); margin-left: 6px; }
+/* rule flow svg */
+.flow { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px; overflow-x: auto; }
+.flow svg { width: 100%; height: auto; max-width: 100%; display: block; font-family: var(--font-body); }
+.flow .box { fill: var(--bg); stroke: var(--line); }
+.flow .q { fill: var(--fg); font-size: 13.5px; }
+.flow .lab { fill: var(--muted); font-size: 12px; font-family: var(--font-mono); }
+.flow .edge { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+.flow .out-red { fill: var(--red-soft); stroke: var(--red); }
+.flow .out-yellow { fill: var(--yellow-soft); stroke: var(--yellow); }
+.flow .out-green { fill: var(--green-soft); stroke: var(--green); }
+.flow .ot { font-weight: 600; font-size: 14px; }
+.flow .ot.r { fill: var(--red); } .flow .ot.y { fill: var(--yellow); } .flow .ot.g { fill: var(--green); }
+.flow .sub { fill: var(--muted); font-size: 11.5px; }
+/* stacked bars */
+.bars { display: grid; gap: 14px; }
+.bar-row { display: grid; grid-template-columns: minmax(120px, 190px) 1fr; gap: 12px; align-items: center; }
+.bar-row .name { font-size: 14px; }
+.bar-row .name small { display: block; color: var(--muted); font-size: 12.5px; }
+.bar { display: flex; height: 34px; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); }
+.seg { display: grid; place-items: center; font-family: var(--font-mono); font-size: 12.5px; font-weight: 500; color: #fff; min-width: 0; overflow: hidden; white-space: nowrap; }
+.seg.r { background: var(--red); } .seg.y { background: var(--yellow); } .seg.g { background: var(--green); }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; color: var(--muted); }
+.legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; background: var(--c); }
+.legend .r { --c: var(--red); } .legend .y { --c: var(--yellow); } .legend .g { --c: var(--green); }
+@media (max-width: 480px) { .bar-row { grid-template-columns: 1fr; gap: 6px; } }
+/* results table */
+.tbl { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; font-size: 14.5px; }
+.tbl th, .tbl td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.tbl tr:last-child td { border-bottom: 0; }
+.tbl th { font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; background: var(--bg); }
+.tbl td.v { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-weight: 500; white-space: nowrap; }
+.tbl-wrap { overflow-x: auto; }
+/* consistency */
+.cons { display: grid; gap: 10px; }
+.cons-row { display: grid; grid-template-columns: minmax(80px, 110px) 1fr minmax(120px, 150px); gap: 12px; align-items: center; font-size: 14px; }
+.cons-row .track { height: 16px; background: var(--line); border-radius: 4px; overflow: hidden; }
+.cons-row .fill { height: 100%; background: var(--accent); border-radius: 4px; }
+.cons-row .val { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 13px; color: var(--muted); text-align: right; }
+.cons-row .val b { color: var(--fg); font-weight: 500; }
+.cons-row.all .fill { background: var(--fg); }
+@media (max-width: 480px) { .cons-row { grid-template-columns: 70px 1fr 110px; } }
+/* limits */
+.limits { display: grid; gap: 10px; list-style: none; padding: 0; margin: 0; }
+.limits li { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--yellow); border-radius: 8px; padding: 12px 14px; font-size: 15px; }
+.limits li b { font-weight: 600; }
+/* feedback comment mock */
+.comment { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; max-width: 640px; font-size: 14px; }
+.comment .ch { background: var(--bg); border-bottom: 1px solid var(--line); padding: 8px 14px; display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; color: var(--muted); font-size: 13px; }
+.comment .ch b { color: var(--fg); font-weight: 600; }
+.comment .cb { padding: 14px; display: grid; gap: 10px; }
+.comment .meta { font-family: var(--font-mono); font-size: 12.5px; color: var(--muted); display: grid; gap: 2px; }
+.comment .vline { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.comment .pill { display: inline-block; padding: 1px 10px; border-radius: 999px; background: var(--yellow-soft); color: var(--yellow); font-size: 12.5px; letter-spacing: 0.04em; text-transform: uppercase; }
+.comment .react { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.comment .react span { border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; font-size: 13px; background: var(--bg); }
+.comment .react em { color: var(--muted); font-style: normal; font-size: 13px; }
+.comment .hidden-block { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); background: var(--bg); border-radius: 6px; padding: 8px 10px; overflow-x: auto; white-space: pre; }
+/* checklist */
+.todo { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.todo li { display: grid; grid-template-columns: 22px 1fr; gap: 10px; align-items: start; font-size: 15px; }
+.todo li::before { content: ""; width: 18px; height: 18px; margin-top: 3px; border: 1.5px solid var(--muted); border-radius: 4px; }
+.measures { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px 20px; list-style: none; padding: 0; margin: 0; font-size: 14.5px; }
+.measures li { display: grid; grid-template-columns: 8px 1fr; gap: 10px; align-items: baseline; }
+.measures li::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); position: relative; top: -1px; }
+.measures b { font-weight: 600; }
+footer { padding-top: 40px; font-size: 13px; color: var(--muted); }
+@media (prefers-reduced-motion: no-preference) { .seg, .cons-row .fill { transition: width .4s ease; } }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+<style>html,body{margin:0} img{max-width:100%}</style>
+</head>
+<body>
+<div class="page">
+<header class="hero">
+  <div class="eyebrow">Compat-review · v9 · 2026-10-21 · Hao Liu</div>
+  <h1>Compat-review v9 Summary</h1>
+  <p class="lead">Compat-review v9 flags 94% of upgrade-breaking pull requests, with 9% false alarms on harmless ones, on a benchmark of 198 labeled pull requests. It costs about a tenth of a cent per pull request per push.</p>
+  <div class="reco">Recommendation: freeze this version as the CI candidate</div>
+  <div class="kpis">
+    <div class="kpi red"><div class="v">94%</div><div class="l">of breaking PRs shown Red</div></div>
+    <div class="kpi green"><div class="v">0</div><div class="l">breaking PRs shown Green</div></div>
+    <div class="kpi yellow"><div class="v">9%</div><div class="l">of harmless PRs shown Red</div></div>
+    <div class="kpi accent"><div class="v">79%</div><div class="l">same verdict in all three runs</div></div>
+    <div class="kpi accent"><div class="v">$0.0013</div><div class="l">per pull request per push</div></div>
+  </div>
+</header>
+
+<section id="what">
+  <div class="sec-head"><div class="eyebrow">1 · What the bot does</div><h2>One note per pull request, three possible verdicts</h2></div>
+  <p>Compat-review reads a pull request and appends an upgrade-compatibility note to it. The note is advisory and never blocks a merge. It answers one question for the human reviewing the PR: will something that works today in a customer installation stop working after this change ships?</p>
+  <div class="verdicts">
+    <div class="verdict red">
+      <h3>Red</h3>
+      <p>A configuration already stored in installations stops working after upgrade, with no action by the operator.</p>
+      <div class="act"><b>Reviewer:</b> confirm the break, look for an alternative that avoids it, and confirm with the PM before merging.</div>
+    </div>
+    <div class="verdict yellow">
+      <h3>Yellow</h3>
+      <p>Behavior changes worth knowing about, but stored configuration keeps working: validation on re-save, limits on new input, changes to output or access.</p>
+      <div class="act"><b>Reviewer:</b> read the note; decide whether a release note is needed.</div>
+    </div>
+    <div class="verdict green">
+      <h3>Green</h3>
+      <p>No behavior change for existing installations.</p>
+      <div class="act"><b>Reviewer:</b> nothing.</div>
+    </div>
+  </div>
+</section>
+
+<section id="how">
+  <div class="sec-head"><div class="eyebrow">2 · How it decides</div><h2>Facts from the model, verdict from a fixed rule</h2></div>
+  <p>The model does not pick the verdict. It reads the change and answers six factual questions. A short fixed rule, written in code, turns those answers into Red, Yellow, or Green. Every Red can therefore be traced to a specific setup that breaks and the reason it breaks, and the rule can be adjusted without changing the prompt.</p>
+
+  <figure>
+    <div class="pipe">
+      <div class="step"><div class="t">Pull request diff</div><div class="d">The change as submitted.</div></div>
+      <div class="arrow"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h12m-5-5 5 5-5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <div class="step"><div class="t">Context added</div><div class="d">Code around each change and the places that call it, from the tree before the change. No model call. Input is about 1.5× the diff.</div></div>
+      <div class="arrow"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h12m-5-5 5 5-5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <div class="step model"><div class="t">Model answers six questions</div><div class="d">Facts only. One review per pull request in production.</div></div>
+      <div class="arrow"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h12m-5-5 5 5-5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <div class="step"><div class="t">Fixed rule in code</div><div class="d">Turns the answers into a verdict. Auditable and tunable without touching the prompt.</div></div>
+      <div class="arrow"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h12m-5-5 5 5-5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <div class="step"><div class="t">Note on the PR</div><div class="d">Red, Yellow, or Green with its reason, plus a gradable comment.</div></div>
+    </div>
+    <figcaption>The pipeline for one pull request. Only the third step calls a model.</figcaption>
+  </figure>
+
+  <h3>The six questions</h3>
+  <ol class="qs">
+    <li>What existing setup, if any, stops working? Named specifically, or "none".</li>
+    <li>Does the change alter something that already exists, or only add something new?</li>
+    <li>Does the change itself keep the old behavior working, for example through a migration, a fallback, or a flag?</li>
+    <li>How common is the affected setup: common, uncommon, or rare?</li>
+    <li>Does the change widen who can do what, or change output that other systems read?</li>
+    <li class="new">How does the break happen? A new restriction on configuration already stored, a check that runs only when the configuration is saved again, a limit on new input only, a permission change, a removal, a changed default, or a changed output.</li>
+  </ol>
+
+  <figure>
+    <h3>The rule</h3>
+    <div class="flow">
+      <svg viewBox="0 0 760 470" role="img" aria-label="Decision flow from the six answers to Red, Yellow or Green">
+        <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#8a94a3"/></marker></defs>
+        <!-- question boxes -->
+        <rect class="box" x="20" y="16" width="330" height="56" rx="8"/>
+        <text class="q" x="36" y="40">A setup is named that stops working</text>
+        <text class="sub" x="36" y="58">question 1</text>
+        <rect class="box" x="20" y="120" width="330" height="56" rx="8"/>
+        <text class="q" x="36" y="144">Something that already exists changes</text>
+        <text class="sub" x="36" y="162">question 2</text>
+        <rect class="box" x="20" y="224" width="330" height="56" rx="8"/>
+        <text class="q" x="36" y="248">Nothing keeps the old behavior working</text>
+        <text class="sub" x="36" y="266">question 3</text>
+        <rect class="box" x="20" y="328" width="330" height="70" rx="8"/>
+        <text class="q" x="36" y="352">The setup is common, or the break is a new</text>
+        <text class="q" x="36" y="370">restriction on stored configuration</text>
+        <text class="sub" x="36" y="388">questions 4 and 6</text>
+        <!-- vertical yes edges -->
+        <path class="edge" d="M185 72 V120" marker-end="url(#ah)"/><text class="lab" x="193" y="100">yes</text>
+        <path class="edge" d="M185 176 V224" marker-end="url(#ah)"/><text class="lab" x="193" y="204">yes</text>
+        <path class="edge" d="M185 280 V328" marker-end="url(#ah)"/><text class="lab" x="193" y="308">yes</text>
+        <path class="edge" d="M185 398 V432" marker-end="url(#ah)"/><text class="lab" x="193" y="420">yes</text>
+        <!-- horizontal no edges -->
+        <path class="edge" d="M350 44 H440" marker-end="url(#ah)"/><text class="lab" x="384" y="38">no</text>
+        <path class="edge" d="M350 148 H440" marker-end="url(#ah)"/><text class="lab" x="384" y="142">no</text>
+        <path class="edge" d="M350 252 H440" marker-end="url(#ah)"/><text class="lab" x="384" y="246">no</text>
+        <path class="edge" d="M350 363 H440" marker-end="url(#ah)"/><text class="lab" x="384" y="357">no</text>
+        <!-- outcomes -->
+        <rect class="out-green" x="442" y="16" width="298" height="56" rx="8"/>
+        <text class="ot g" x="458" y="40">Green</text>
+        <text class="sub" x="458" y="58">Yellow instead if access widens or output changes</text>
+        <rect class="out-yellow" x="442" y="120" width="298" height="56" rx="8"/>
+        <text class="ot y" x="458" y="144">Yellow</text>
+        <text class="sub" x="458" y="162">a setup is named, but only a new path is affected</text>
+        <rect class="out-yellow" x="442" y="224" width="298" height="56" rx="8"/>
+        <text class="ot y" x="458" y="248">Yellow</text>
+        <text class="sub" x="458" y="266">a migration, fallback or flag keeps it working</text>
+        <rect class="out-yellow" x="442" y="335" width="298" height="56" rx="8"/>
+        <text class="ot y" x="458" y="359">Yellow</text>
+        <text class="sub" x="458" y="377">uncommon setup, and not a runtime restriction</text>
+        <rect class="out-red" x="20" y="432" width="330" height="30" rx="8"/>
+        <text class="ot r" x="36" y="452">Red</text>
+        <text class="sub" x="78" y="452">stored configuration stops working after upgrade</text>
+      </svg>
+    </div>
+    <figcaption>Red needs all four gates. Any earlier "no" lands on Yellow, or Green when no setup is named and nothing widens or changes output.</figcaption>
+  </figure>
+
+  <div class="prose">
+    <p><b>Why stored configuration gets special treatment.</b> How common a setup is cannot be judged from a diff. So the rule does not depend on that answer for the most damaging case: a new deny-list, validation rule, or filter applied at runtime to configuration customers already have stored. The stored value stays in place and silently stops working the next time it is used, however rare it is. A check that only runs when someone saves the value again is Yellow, because existing configuration keeps working until then. The rule makes no judgment about whether the blocked value is a reasonable setup.</p>
+    <p><b>More context than the diff.</b> Before the model reads the change, tooling adds the code around each changed spot and the places that call it, taken from the tree before the change. No model call is involved. This is how the model can tell that a validator runs when a job launches rather than when a setting is saved. The input is about one and a half times the diff.</p>
+    <p><b>One review per pull request.</b> In production each pull request is reviewed once. The benchmark reviews each one three times to measure how consistent a single review is; the consistency numbers are in Results.</p>
+  </div>
+</section>
+
+<section id="benchmark">
+  <div class="sec-head"><div class="eyebrow">3 · The benchmark</div><h2>198 labeled pull requests from one repository</h2></div>
+  <p>198 merged pull requests from the Ansible Automation Platform controller repository, each labeled breaking, notable, or none under the same written criterion the bot applies.</p>
+  <figure>
+    <div class="bars">
+      <div class="bar-row">
+        <div class="name">Full set <small>198 pull requests</small></div>
+        <div class="bar" role="img" aria-label="Full set: 34 breaking, 68 notable, 96 none">
+          <div class="seg r" style="width:17.2%">34</div><div class="seg y" style="width:34.3%">68</div><div class="seg g" style="width:48.5%">96</div>
+        </div>
+      </div>
+      <div class="bar-row">
+        <div class="name">Random sample <small>100 pull requests, within the full set</small></div>
+        <div class="bar" role="img" aria-label="Random sample: 7 breaking, 22 notable, 71 none">
+          <div class="seg r" style="width:7%">7</div><div class="seg y" style="width:22%">22</div><div class="seg g" style="width:71%">71</div>
+        </div>
+      </div>
+      <div class="legend"><span class="r">Breaking</span><span class="y">Notable</span><span class="g">None</span></div>
+    </div>
+    <figcaption>The random sample gives the mix a reviewer would see on a live stream of pull requests. The other 98 were chosen for their likelihood of changing behavior, mostly security-hardening changes: blocklists, validation, permission narrowing.</figcaption>
+  </figure>
+  <div class="prose">
+    <p><b>Labels.</b> The labeled set was created by two models, Opus and Sol, followed by human review. Each model answered the same six questions for every pull request, a human reviewed every label, and disputed cases were ruled by the maintainer, with each ruling and its reason recorded. Writing the v9 criterion down moved seven labels to breaking and nine to notable. The queue of unreviewed labels is empty.</p>
+    <p><b>Second repository.</b> 24 pull requests from django-ansible-base, graded by their author, none breaking. Used as a check on false alarms in a second codebase.</p>
+  </div>
+  <h3>Measures</h3>
+  <ul class="measures">
+    <li><span><b>Red on breaking:</b> the share of breaking PRs shown Red.</span></li>
+    <li><span><b>Escapes:</b> breaking PRs shown Green. The one number that must stay at zero.</span></li>
+    <li><span><b>False Red:</b> none PRs shown Red.</span></li>
+    <li><span><b>Red on notable:</b> PRs the reviewer should read but that are not breaking.</span></li>
+    <li><span><b>Stream mix:</b> Red, Yellow, and Green per 100 pull requests from the random sample.</span></li>
+    <li><span><b>Red precision:</b> the share of Reds that are breaking, and the share that are breaking or notable.</span></li>
+    <li><span><b>Consistency:</b> every PR was reviewed three times; the share of PRs that get the same verdict in all three runs.</span></li>
+    <li><span><b>Cost:</b> tokens and dollars per run at list price.</span></li>
+  </ul>
+</section>
+
+<section id="results">
+  <div class="sec-head"><div class="eyebrow">4 · Results</div><h2>A single review catches 94% of breaking changes with no escapes</h2></div>
+  <p>A single review shows Red on 94% of breaking pull requests, with no escapes, and on 9% of harmless ones, averaged over the three runs. Luna is the model in the candidate configuration.</p>
+  <div class="tbl-wrap">
+  <table class="tbl">
+    <thead><tr><th>Full set, 198 PRs</th><th>Luna, single review, mean of three runs</th></tr></thead>
+    <tbody>
+      <tr><td>Red on breaking (34 PRs)</td><td class="v">94%</td></tr>
+      <tr><td>Escapes</td><td class="v">0</td></tr>
+      <tr><td>False Red on none (96 PRs)</td><td class="v">9%</td></tr>
+      <tr><td>Red on notable (68 PRs)</td><td class="v">28%</td></tr>
+      <tr><td>Stream per 100: Red / Yellow / Green</td><td class="v">16 / 32 / 52</td></tr>
+      <tr><td>Red precision: breaking / breaking or notable</td><td class="v">53% / 86%</td></tr>
+      <tr><td>Cost of one pass over the benchmark</td><td class="v">$0.25</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <figure>
+    <div class="bars">
+      <div class="bar-row">
+        <div class="name">What a reviewer sees <small>per 100 pull requests on the stream</small></div>
+        <div class="bar" role="img" aria-label="Per 100 pull requests: 16 Red, 32 Yellow, 52 Green">
+          <div class="seg r" style="width:16%">16</div><div class="seg y" style="width:32%">32</div><div class="seg g" style="width:52%">52</div>
+        </div>
+      </div>
+      <div class="legend"><span class="r">Red</span><span class="y">Yellow</span><span class="g">Green</span></div>
+    </div>
+    <figcaption>Of the 16 Reds, 53% are breaking and 86% are breaking or notable.</figcaption>
+  </figure>
+
+  <figure>
+    <h3>Consistency</h3>
+    <p>Each pull request was reviewed three times. The same verdict came back in all three runs for 79% of pull requests, and no breaking pull request was shown Green in any run.</p>
+    <div class="cons">
+      <div class="cons-row"><div>Breaking</div><div class="track"><div class="fill" style="width:94%"></div></div><div class="val"><b>94%</b> · 32 of 34</div></div>
+      <div class="cons-row"><div>Notable</div><div class="track"><div class="fill" style="width:76%"></div></div><div class="val"><b>76%</b> · 52 of 68</div></div>
+      <div class="cons-row"><div>None</div><div class="track"><div class="fill" style="width:75%"></div></div><div class="val"><b>75%</b> · 72 of 96</div></div>
+      <div class="cons-row all"><div>All</div><div class="track"><div class="fill" style="width:79%"></div></div><div class="val"><b>79%</b> · 156 of 198</div></div>
+    </div>
+    <figcaption>Same verdict in all three runs, by label. Where runs disagree, the split is mostly between neighboring verdicts; six harmless pull requests drew both Red and Green across runs. Run to run, Red on breaking ranged from 31 to 33 of 34, and false Red from 7 to 10 of 96.</figcaption>
+  </figure>
+
+  <div class="prose">
+    <p>Half of the Reds on breaking pull requests come through the stored-configuration criterion rather than a guess at how common the setup is. The added context lifts Red on breaking from 88% to 94% on the development slice.</p>
+    <p><b>Second repository.</b> No Red on the 24 author-graded pull requests from django-ansible-base across three runs.</p>
+    <p><b>Cost.</b> About 5,500 input and 1,400 output tokens per pull request: $0.0013 per pull request per push, $0.25 for one pass over the benchmark.</p>
+  </div>
+</section>
+
+<section id="limits">
+  <div class="sec-head"><div class="eyebrow">5 · Known limits</div><h2>Where it still misses, and why</h2></div>
+  <ul class="limits">
+    <li><b>Three of 34 breaking PRs are not Red in every run.</b> Two are permission changes, which the criterion covers only through prevalence; they are Red in one and two runs of three and never Green. One depends on a runtime path that lives in an earlier PR's code, so its own diff reads as re-save in every run.</li>
+    <li><b>Between 7 and 10 of 96 none PRs are Red in a given run, three of them in every run.</b> All are prevalence judgments: the model called the affected setup common where the label says otherwise.</li>
+    <li><b>Yellow lands on 32 of every 100 random PRs.</b> That rate follows from the definition of notable, not from the model, and is where reviewer fatigue would come from.</li>
+    <li><b>Prevalence is still a model judgment</b> wherever the mechanism clause does not apply, and it is the source of the remaining false Reds.</li>
+    <li><b>One repository, plus a 24-PR check on a second.</b> Base rates are the controller's. Enriched context was built only for the controller in the benchmark; in CI the checkout provides the tree for any repository.</li>
+  </ul>
+</section>
+
+<section id="feedback">
+  <div class="sec-head"><div class="eyebrow">6 · Feedback loop</div><h2>Every review is a gradable record</h2></div>
+  <p>Alongside the note in the PR description, the bot posts one comment on the PR carrying what a grader needs later: the bot version (prompt, rule, and model configuration), the commit it reviewed (PR head SHA and base SHA), the verdict with its one-line reason duplicated from the note, and an invitation to the reviewer: thumbs up if the verdict is right, thumbs down if it is wrong, and a reply saying why.</p>
+  <figure>
+    <div class="comment" aria-label="Example of the comment the bot posts">
+      <div class="ch"><b>compat-review</b> <span>bot</span> <span>commented on this pull request</span></div>
+      <div class="cb">
+        <div class="vline"><span class="pill">Yellow</span> Validation added on re-save; stored values keep working until edited.</div>
+        <div class="meta">
+          <div>version: prompt v9 · rule v9 · model luna-enriched</div>
+          <div>reviewed: head 3f9c2e1 against base 8a41d07</div>
+        </div>
+        <div>Is this verdict right? React 👍 if it is, 👎 if it is not, and reply to this comment to say why.</div>
+        <div class="react"><span>👍 2</span><span>👎 0</span><em>reactions and replies are read back by the extraction script</em></div>
+        <div class="hidden-block">&lt;!-- compat-review {"version":"v9","rule":"v9","model":"luna-enriched","head":"3f9c2e1","base":"8a41d07","verdict":"notable"} --&gt;</div>
+      </div>
+    </div>
+    <figcaption>An example comment. The same facts sit in it as a hidden machine-readable block, so extraction needs nothing but the GitHub API. A re-push gets a new comment only when the diff changes; the cache keyed by diff hash keeps the thread quiet otherwise.</figcaption>
+  </figure>
+  <div class="prose">
+    <p><b>Extraction.</b> A script lists the bot's comments across a repository, reads the reactions and the replies, and produces a grade sheet per repository and bot version: agreement rate, and every downvoted case with the reviewer's reason. Downvotes with a reason become new benchmark cases in the reviewer's own words. That is how the rule and the prompt get tuned per repository.</p>
+    <p>PR conversation comments on GitHub are flat, so a reply is matched as a later comment on the same PR that mentions the bot or quotes its comment.</p>
+  </div>
+</section>
+
+<section id="next">
+  <div class="sec-head"><div class="eyebrow">7 · Next steps</div><h2>From candidate to CI</h2></div>
+  <ul class="todo">
+    <li>Rule on the two labels still open: the permission pair and the PR ruled breaking by family.</li>
+    <li>Freeze Luna v9-enriched, one review per pull request, as the CI candidate.</li>
+    <li>Build the CI piece: the appended note on the PR, one gradable comment per review, a cache keyed by diff hash so a re-push without changes costs nothing, per-repository configuration, and the feedback comment with its extraction script.</li>
+    <li>Re-run the benchmark after the rulings and publish the numbers with the note.</li>
+  </ul>
+</section>
+
+<footer>Numbers as of 2026-10-21, from three runs of Luna v9-enriched over the 198-PR benchmark. Costs at list price.</footer>
+</div>
+</body>
+</html>
