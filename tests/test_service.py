@@ -134,7 +134,9 @@ class ServiceTest(unittest.TestCase):
         from http.server import ThreadingHTTPServer
 
         class StubWorker:
-            queue = queue.Queue()
+            pass
+
+        StubWorker.queue = queue.Queue()
 
         settings = service.Settings(data_dir=Path("/nonexistent"), model="m", webhook_secret="s3cret")
         server = ThreadingHTTPServer(("127.0.0.1", 0), service.make_handler(settings, StubWorker))

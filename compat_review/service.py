@@ -235,11 +235,14 @@ def main(argv=None):
     if args.once:
         repo_part, number = args.once.rsplit("#", 1)
         owner, repo = repo_part.split("/", 1)
-        gh = client(settings, Job(owner, repo, int(number), "", "", ""))
-        pr = gh.pull(owner, repo, int(number))
-        job = Job(owner, repo, int(number), pr["base"]["ref"], pr.get("title") or "", pr.get("body") or "",
-                  draft=bool(pr.get("draft")))
-        result = handle(job, settings, gh)
+        try:
+            gh = client(settings, Job(owner, repo, int(number), "", "", ""))
+            pr = gh.pull(owner, repo, int(number))
+            job = Job(owner, repo, int(number), pr["base"]["ref"], pr.get("title") or "", pr.get("body") or "",
+                      draft=bool(pr.get("draft")))
+            result = handle(job, settings, gh)
+        except (RuntimeError, OSError) as e:
+            ap.exit(1, f"{type(e).__name__}: {str(e)[:400]}\n")
         print(json.dumps(result, indent=1) if result else "nothing reviewed")
         return 0
 
