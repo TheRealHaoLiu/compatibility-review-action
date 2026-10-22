@@ -63,7 +63,10 @@ def _lines(result):
     if result.get("q_widens_access_or_changes_output") == "yes":
         out.append("- **Widens access or changes output that clients may parse.**")
     for f in result.get("findings") or []:
-        out.append(f"- {f.get('who_breaks', '').strip()}: {f.get('how', '').strip()} ({f.get('evidence', '').strip()})")
+        who = f.get("who_breaks", "").strip().rstrip(".")
+        out.append(f"- {who}: {f.get('how', '').strip()} ({f.get('evidence', '').strip()})")
+    while out and out[-1] == "":
+        out.pop()
     return out
 
 
