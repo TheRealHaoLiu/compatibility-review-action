@@ -18,7 +18,7 @@ Environment:
   COMPAT_REVIEW_POLL_REPOS  repositories to poll, comma-separated (same as --poll)
   COMPAT_REVIEW_POLL_INTERVAL seconds between polls (same as --interval); default 60
   COMPAT_REVIEW_POLL_MAX_AGE_DAYS leave pull requests not updated in this many days alone until
-                            pushed (same as --max-age); default 30, 0 for no limit
+                            pushed (same as --max-age); default 7, 0 for no limit
   COMPAT_REVIEW_MODEL, COMPAT_REVIEW_API, COMPAT_REVIEW_EFFORT, OPENAI_BASE_URL, OPENAI_API_KEY
   COMPAT_REVIEW_DATA        data directory (mirrors, reviews); default ./data
   COMPAT_REVIEW_MAX_MIRRORS_GB  budget for all mirrors together; least recently used ones are
@@ -351,7 +351,7 @@ class Poller(threading.Thread):
     queued, and reviewed only once a push moves its head.
     """
 
-    def __init__(self, settings, worker, repos, interval, client=client_for_repo, max_age_days=30):
+    def __init__(self, settings, worker, repos, interval, client=client_for_repo, max_age_days=7):
         super().__init__(daemon=True)
         self.settings, self.worker, self.repos, self.interval, self.client = settings, worker, repos, interval, client
         self.max_age_days = max_age_days
@@ -467,9 +467,9 @@ def main(argv=None):
     ap.add_argument("--interval", type=int, default=int(os.environ.get("COMPAT_REVIEW_POLL_INTERVAL", "60")),
                     help="seconds between polls (default: COMPAT_REVIEW_POLL_INTERVAL or 60)")
     ap.add_argument("--max-age", type=float, metavar="DAYS",
-                    default=float(os.environ.get("COMPAT_REVIEW_POLL_MAX_AGE_DAYS", "30")),
+                    default=float(os.environ.get("COMPAT_REVIEW_POLL_MAX_AGE_DAYS", "7")),
                     help="poll mode: leave pull requests not updated in this many days alone until pushed "
-                         "(default: COMPAT_REVIEW_POLL_MAX_AGE_DAYS or 30; 0 reviews everything)")
+                         "(default: COMPAT_REVIEW_POLL_MAX_AGE_DAYS or 7; 0 reviews everything)")
     ap.add_argument("--no-webhook", action="store_true", help="poll only: do not listen for webhooks")
     ap.add_argument("--max-mirrors-gb", type=float, metavar="GB",
                     help="budget for all mirrors together (default: COMPAT_REVIEW_MAX_MIRRORS_GB or 50)")
