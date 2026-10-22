@@ -11,6 +11,7 @@ BEGIN = "<!-- compatibility-review:begin"  # the opening marker; the record and 
 END = "<!-- compatibility-review:end -->"
 MARK = "<!-- compatibility-review "
 BADGE = {"breaking": "🔴 Red", "notable": "🟡 Yellow", "none": "🟢 Green"}
+ALERT = {"breaking": "CAUTION", "notable": "WARNING", "none": "TIP"}  # GitHub's colored callouts
 MECHANISM = {
     "restricts_stored_at_runtime": "a new restriction applied at runtime to configuration already stored",
     "restricts_stored_on_resave": "a check that runs only when the stored value is saved again",
@@ -70,12 +71,18 @@ def _lines(result):
     return out
 
 
+def _callout(result, lines):
+    """A GitHub alert block colored by verdict, holding `lines`."""
+    return [f"> [!{ALERT[result['verdict']]}]", *(("> " + line) if line else ">" for line in lines)]
+
+
 def note(result):
-    """The section spliced into the PR description."""
+    """The section spliced into the PR description: a rule, then a colored callout."""
     m = result.get("_meta", {})
     head = (m.get("head") or "")[:7]
-    lines = [f"{BEGIN} {json.dumps(record(result), separators=(',', ':'))} -->", *_lines(result), "",
-             f"<sub>compatibility-review {m.get('prompt', '')} · reviewed {head} · advisory, does not block merging</sub>",
+    lines = [f"{BEGIN} {json.dumps(record(result), separators=(',', ':'))} -->", "---",
+             *_callout(result, [*_lines(result), "",
+                                f"<sub>compatibility-review {m.get('prompt', '')} · reviewed {head} · advisory, does not block merging</sub>"]),
              END]
     return "\n".join(lines)
 
@@ -93,7 +100,7 @@ def comment(result):
     """The gradable comment: the verdict again, what was reviewed, and the invitation."""
     m = result.get("_meta", {})
     rec = record(result)
-    lines = [*_lines(result), "",
+    lines = [*_callout(result, _lines(result)), "",
              f"`version: prompt {m.get('prompt')} · rule {m.get('rule')} · model {m.get('model')}`  ",
              f"`reviewed: head {(m.get('head') or '')[:7]} against base {(m.get('base') or '')[:7]}`", "",
              "Is this verdict right? React 👍 if it is, 👎 if it is not, and reply to this comment to say why.",
