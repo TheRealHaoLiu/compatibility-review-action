@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import queue
 import subprocess
 import tempfile
 import unittest
@@ -44,12 +45,16 @@ class FakeGitHub:
     def __init__(self):
         self.body = "Original description."
         self.comments = []
+        self.pulls = []
 
     def git_auth_header(self):
         return ""
 
     def pull(self, owner, repo, number):
         return {"body": self.body, "base": {"ref": "main"}, "title": "t"}
+
+    def open_pulls(self, owner, repo):
+        return list(self.pulls)
 
     def update_pull_body(self, owner, repo, number, body):
         self.body = body
@@ -121,13 +126,81 @@ class ServiceTest(unittest.TestCase):
             self.assertEqual(r2["verdict"], "none")
             self.assertEqual(len(gh.comments), 2)
 
+    def test_stored_without_posting_is_posted_later_without_a_model_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = make_repo(tmp)
+            gh = FakeGitHub()
+            job = service.Job("o", "r", 1, "main", "Deny link-local", "")
+            quiet = service.Settings(data_dir=Path(tmp) / "data", model="m", post=False)
+            first = service.handle(job, quiet, gh, fake_reviewer, mirror=work)
+            self.assertEqual(gh.comments, [])
+            self.assertNotIn("comment_id", first["_meta"])
+            loud = service.Settings(data_dir=Path(tmp) / "data", model="m", post=True)
+            again = service.handle(job, loud, gh, lambda *a: self.fail("model called"), mirror=work)
+            self.assertEqual(again["_meta"]["comment_id"], 1)
+            self.assertIn("🔴 Red", gh.body)
+            stored = json.loads(next((Path(tmp) / "data" / "reviews" / "o-r").glob("1-*.json")).read_text())
+            self.assertEqual(stored["_meta"]["comment_id"], 1)
+            self.assertIsNone(service.handle(job, loud, gh, lambda *a: self.fail("model called"), mirror=work))
+            self.assertEqual(len(gh.comments), 1)
+
     def test_draft_skipped(self):
         settings = service.Settings(data_dir=Path("/nonexistent"), model="m")
         job = service.Job("o", "r", 1, "main", "t", "", draft=True)
         self.assertIsNone(service.handle(job, settings, FakeGitHub(), fake_reviewer, mirror="/nonexistent"))
 
+    def test_parse_repos(self):
+        self.assertEqual(service.parse_repos(["o/r", "a/b, c/d"]), [("o", "r"), ("a", "b"), ("c", "d")])
+        self.assertEqual(service.parse_repos([""]), [])
+        with self.assertRaises(ValueError):
+            service.parse_repos(["just-a-name"])
+
+    def test_poller_queues_only_new_heads(self):
+        def pr(number, sha, draft=False):
+            return {"number": number, "head": {"sha": sha}, "base": {"ref": "main"}, "title": f"PR {number}",
+                    "body": None, "draft": draft}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "data"
+            reviews = data / "reviews" / "o-r"
+            reviews.mkdir(parents=True)
+            (reviews / "3-aaaaaaaaaaaa.json").write_text(json.dumps(
+                {"verdict": "none", "_meta": {"number": 3, "head": "ccc", "comment_id": 9}}))
+            (reviews / "4-bbbbbbbbbbbb.json").write_text(json.dumps(
+                {"verdict": "none", "_meta": {"number": 4, "head": "ddd"}}))  # stored while posting was off
+            gh = FakeGitHub()
+            gh.pulls = [pr(1, "aaa"), pr(2, "bbb", draft=True), pr(3, "ccc"), pr(4, "ddd")]
+
+            class StubWorker:
+                pass
+
+            StubWorker.queue = queue.Queue()
+            settings = service.Settings(data_dir=data, model="m", post=True)
+            poller = service.Poller(settings, StubWorker, [("o", "r")], 60, client=lambda s, o, r: (gh, 42))
+            queued = poller.scan()
+            self.assertEqual([j.number for j in queued], [1, 4])  # 2 is a draft, 3 was reviewed and posted
+            self.assertEqual((queued[0].installation_id, queued[0].base_ref, queued[0].title), (42, "main", "PR 1"))
+            self.assertEqual(StubWorker.queue.qsize(), 2)
+            self.assertEqual(poller.scan(), [])
+            gh.pulls = [pr(1, "aa2"), pr(2, "bbb"), pr(3, "ccc")]  # 1 pushed, 2 ready for review, 4 closed
+            self.assertEqual([j.number for j in poller.scan()], [1, 2])
+            self.assertEqual(poller.scan(), [])
+
+    def test_poller_survives_a_listing_failure(self):
+        class StubWorker:
+            pass
+
+        StubWorker.queue = queue.Queue()
+
+        def broken(settings, owner, repo):
+            raise service.GitHubError("GET /repos/o/r/pulls: 404 Not Found")
+
+        settings = service.Settings(data_dir=Path("/nonexistent"), model="m")
+        poller = service.Poller(settings, StubWorker, [("o", "r")], 60, client=broken)
+        with self.assertLogs("compatibility-review", level="ERROR"):
+            self.assertEqual(poller.scan(), [])
+
     def test_webhook_endpoint(self):
-        import queue
         import threading
         import urllib.error
         import urllib.request

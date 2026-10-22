@@ -26,19 +26,41 @@ class GitHub:
     def __init__(self, token, api=API):
         self.token = token
         self.api = api
+        self.minted_at = None
+
+    @staticmethod
+    def _as_app(method, path, app_id, private_key_pem, api=API):
+        """One call authenticated as the App itself (a JWT), not as an installation."""
+        req = urllib.request.Request(api + path, method=method, data=b"{}" if method == "POST" else None,
+                                     headers={"Authorization": f"Bearer {app_jwt(app_id, private_key_pem)}",
+                                              "Accept": "application/vnd.github+json",
+                                              "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            raise GitHubError(f"{method} {path}: {e.code} {e.read().decode()[:300]}") from None
 
     @classmethod
     def as_installation(cls, app_id, private_key_pem, installation_id, api=API):
         """Mint an installation access token (valid for an hour)."""
-        req = urllib.request.Request(
-            f"{api}/app/installations/{installation_id}/access_tokens", method="POST", data=b"{}",
-            headers={"Authorization": f"Bearer {app_jwt(app_id, private_key_pem)}",
-                     "Accept": "application/vnd.github+json", "Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=30) as r:
-            tok = json.load(r)
+        tok = cls._as_app("POST", f"/app/installations/{installation_id}/access_tokens", app_id, private_key_pem, api)
         gh = cls(tok["token"], api)
+        gh.minted_at = time.time()
         gh.expires_at = tok.get("expires_at")
         return gh
+
+    @classmethod
+    def installation_id(cls, app_id, private_key_pem, owner, repo, api=API):
+        """The App's installation on a repository named on the command line rather than in an event."""
+        try:
+            return cls._as_app("GET", f"/repos/{owner}/{repo}/installation", app_id, private_key_pem, api)["id"]
+        except GitHubError as e:
+            raise GitHubError(f"the App is not installed on {owner}/{repo} ({e})") from None
+
+    def stale(self):
+        """An installation token older than 50 minutes (they last an hour); a personal token never."""
+        return self.minted_at is not None and time.time() - self.minted_at > 50 * 60
 
     def request(self, method, path, body=None):
         data = json.dumps(body).encode() if body is not None else None
@@ -58,6 +80,16 @@ class GitHub:
 
     def pull(self, owner, repo, number):
         return self.request("GET", f"/repos/{owner}/{repo}/pulls/{number}")
+
+    def open_pulls(self, owner, repo):
+        """Every open pull request, newest first; one request per hundred."""
+        out, page = [], 1
+        while True:
+            batch = self.request("GET", f"/repos/{owner}/{repo}/pulls?state=open&per_page=100&page={page}")
+            out.extend(batch)
+            if len(batch) < 100:
+                return out
+            page += 1
 
     def update_pull_body(self, owner, repo, number, body):
         return self.request("PATCH", f"/repos/{owner}/{repo}/pulls/{number}", {"body": body})

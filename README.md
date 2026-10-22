@@ -14,34 +14,58 @@ A CI bot that reads a pull request and appends an upgrade-compatibility note to 
 
 ## Status
 
-- `compat_review/` is the reviewer at version v9: the prompt, the output schema, the rule, the repository-facts builder, a command that reviews one change in a checkout, and a webhook service that runs as a GitHub App.
+- `compat_review/` is the reviewer at version v9: the prompt, the output schema, the rule, the repository-facts builder, a command that reviews one change in a checkout, and a service that reviews pull requests by polling or as a webhook GitHub App.
 - `docs/` is the published summary of v9.
 - The evaluation harness and its data live in a private repository, because the benchmark references changes that had not shipped when they were labeled.
 
-## Run the webhook service as a GitHub App
+## Run the service
 
-The service receives `pull_request` events, reviews each new diff once, writes the note into the PR description, and posts one gradable comment per review. One process, standard library plus PyJWT, with bare mirrors of the repositories it reviews under its data directory.
+The service reviews each new diff of a pull request once, writes the note into the PR description, and posts one gradable comment per review. One process, standard library plus PyJWT, with bare mirrors of the repositories it reviews under its data directory. It learns about pull requests in one of two ways, or both at once:
+
+- **Poll mode** lists the open pull requests of named repositories every interval and reviews those whose head commit it has not seen. It needs a token and nothing else: no App, no public endpoint. Start here.
+- **Webhook mode** receives `pull_request` events as a GitHub App, so a review starts seconds after a push. It needs an App registration and a reachable `/webhook` URL.
+
+Common to both:
+
+```sh
+pip install ".[service]"
+export OPENAI_BASE_URL=https://your-endpoint   # any OpenAI-compatible gateway
+export OPENAI_API_KEY=...
+export COMPAT_REVIEW_MODEL=your-model-name
+```
+
+### Poll mode
+
+```sh
+export GITHUB_TOKEN=$(gh auth token)           # or a fine-grained token: pull requests read/write, contents read
+compatibility-review-service --poll owner/repo --no-webhook --no-post
+```
+
+Watch the log: the first scan queues every open, non-draft pull request, the worker reviews them one at a time, and each result lands in `data/reviews/`. Drop `--no-post` once a review looks right; results stored while posting was off are posted on the next scan without a new model call. `--poll` repeats or takes a comma-separated list (`COMPAT_REVIEW_POLL_REPOS` in the environment does the same, for a container), `--interval` sets the seconds between scans (`COMPAT_REVIEW_POLL_INTERVAL`, default 60). Polling costs one API request per hundred open pull requests per scan. A pull request that fails to review is not retried until its head moves or the service restarts.
+
+**One pull request by hand:** `compatibility-review-service --once owner/repo#123` reviews it now and prints the result.
+
+### Webhook mode
 
 1. **Create a GitHub App** (Settings, Developer settings, GitHub Apps, New GitHub App). Webhook URL: your service's `/webhook` (for a trial, a smee.io channel). Set a webhook secret. Permissions: Pull requests read and write, Contents read, Metadata read. Subscribe to the Pull request event. Generate a private key and note the App ID. Install the App on the repositories to review.
 2. **Run it.**
 
    ```sh
-   pip install ".[service]"
    export GITHUB_APP_ID=12345
    export GITHUB_APP_PRIVATE_KEY_FILE=./app.pem
    export GITHUB_WEBHOOK_SECRET=...
-   export OPENAI_BASE_URL=https://your-endpoint   # any OpenAI-compatible gateway
-   export OPENAI_API_KEY=...
-   export COMPAT_REVIEW_MODEL=your-model-name
    compatibility-review-service --port 8000          # add --no-post to review without writing to GitHub
    ```
 
    For a trial on a laptop, forward the App's webhooks to it: `npx smee-client -u https://smee.io/<channel> -t http://localhost:8000/webhook`.
-3. **Review one pull request by hand** with `compatibility-review-service --once owner/repo#123`. With `GITHUB_TOKEN` set to a personal token, this works before any App exists.
 
-What the service does per event: verify the signature, queue the PR, fetch the mirror and the PR head, diff from the merge base, repository facts from the tree at the merge base, read the repository's `.compatibility-review.toml` at that commit, one model call, then the note and the comment. The result JSON lands in `data/reviews/<owner>-<repo>/<number>-<diff sha>.json`; a diff with the same sha256 is not reviewed again, so a re-push without changes costs nothing. Draft PRs are skipped unless `COMPAT_REVIEW_SKIP_DRAFTS=0`. Other settings: `COMPAT_REVIEW_API` (`responses`, `chat`, `anthropic`), `COMPAT_REVIEW_EFFORT`, `COMPAT_REVIEW_BASE_URL`, `COMPAT_REVIEW_DATA`, `COMPAT_REVIEW_HEADERS` (a JSON object of extra request headers for a gateway).
+App credentials work in poll mode and with `--once` too: the service looks up the App's installation on each repository. Adding `--poll owner/repo` to a webhook service makes it also sweep for pull requests whose events were missed, for example while it was down.
 
-A `Dockerfile` builds the service image; mount `/data` and pass the environment above.
+### What happens per pull request
+
+Fetch the mirror and the PR head, diff from the merge base, repository facts from the tree at the merge base, read the repository's `.compatibility-review.toml` at that commit, one model call, store the result, then the note and the comment. The result JSON lands in `data/reviews/<owner>-<repo>/<number>-<diff sha>.json`; a diff with the same sha256 is not reviewed again, so a re-push without changes costs nothing. The result is stored before anything is posted, so a failed post never costs a second model call. Draft PRs are skipped unless `COMPAT_REVIEW_SKIP_DRAFTS=0`. Other settings: `COMPAT_REVIEW_API` (`responses`, `chat`, `anthropic`), `COMPAT_REVIEW_EFFORT`, `COMPAT_REVIEW_BASE_URL`, `COMPAT_REVIEW_DATA`, `COMPAT_REVIEW_HEADERS` (a JSON object of extra request headers for a gateway).
+
+A `Dockerfile` builds the service image; mount `/data` and pass the environment above. With `COMPAT_REVIEW_POLL_REPOS` set, the container polls; with the App variables set, it serves webhooks on port 8000; with both, it does both.
 
 ### What it posts
 
@@ -89,7 +113,7 @@ Without the file, the generic product paragraph in `compat_review/context.md` is
 | `compat_review/change.py` | Diff from the merge base, tree extraction, the assembled input |
 | `compat_review/review.py` | The model call (Responses, Chat Completions, or Anthropic Messages) |
 | `compat_review/cli.py` | `compatibility-review`: one change in a checkout |
-| `compat_review/service.py` | `compatibility-review-service`: the webhook server and worker |
+| `compat_review/service.py` | `compatibility-review-service`: the poller, the webhook server, and the worker |
 | `compat_review/github.py` | GitHub App tokens and the REST calls used |
 | `compat_review/post.py` | The note and the gradable comment |
 | `compat_review/mirror.py` | Bare mirrors of reviewed repositories |
