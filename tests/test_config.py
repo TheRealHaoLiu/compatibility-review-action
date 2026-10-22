@@ -86,6 +86,14 @@ class ConfigTest(unittest.TestCase):
         with isolated():
             self.assertEqual(config.repo_overrides(config.load()), {})
 
+    def test_model_calls_read_the_configuration(self):
+        from compat_review import review
+
+        with isolated(COMPAT_REVIEW_HEADERS='{"x-k": "v"}', OPENAI_API_KEY="k"):
+            config.load()
+            headers = review._headers(config.current().API_KEY)
+            self.assertEqual((headers["Authorization"], headers["x-k"]), ("Bearer k", "v"))
+
     def test_validation(self):
         with isolated(COMPAT_REVIEW_API="bogus"):
             with self.assertRaises(ValueError) as ctx:

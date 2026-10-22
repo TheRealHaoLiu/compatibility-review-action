@@ -17,6 +17,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from . import config
 from . import PROMPT_VERSION, RULE_VERSION, derive
 
 HERE = Path(__file__).resolve().parent
