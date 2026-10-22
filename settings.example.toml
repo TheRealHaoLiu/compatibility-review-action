@@ -31,6 +31,7 @@ poll_max_age_days = 7                # pull requests not updated in this many da
 skip_drafts = true
 max_mirrors_gb = 50                  # least recently used mirrors are deleted past this
 feedback_interval = 1800             # seconds between feedback refreshes of recently posted reviews
+rebuild_days = 90                    # at startup, rebuild the database from the notes on pull requests updated this recently; 0 = off
 # dashboard_token = "..."            # if set, the dashboard and exports require ?token= or a Bearer header
 
 # GitHub: a personal token (enough for poll mode and --once) or an App (webhook mode; works for polling too)

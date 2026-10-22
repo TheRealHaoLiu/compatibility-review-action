@@ -45,6 +45,7 @@ def validators():
         Validator("SKIP_DRAFTS", default=True, cast=bool),
         Validator("MAX_MIRRORS_GB", default=50, cast=float, gt=0),
         Validator("FEEDBACK_INTERVAL", default=1800, cast=int, gte=60),
+        Validator("REBUILD_DAYS", default=90, cast=float, gte=0),
         Validator("DASHBOARD_TOKEN", default=None),
         Validator("PRICE_IN_PER_M", default=None),
         Validator("PRICE_OUT_PER_M", default=None),

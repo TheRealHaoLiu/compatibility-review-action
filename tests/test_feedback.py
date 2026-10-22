@@ -86,6 +86,25 @@ class FeedbackTest(unittest.TestCase):
         self.assertEqual(out["note_present"], 0)
         self.assertEqual(out["reply_count"], 1)  # alice's comment still counts, after the posting time
 
+    def test_resolves_the_comment_for_a_review_recovered_from_a_note(self):
+        mine = {"id": 950, "user": {"login": "bot", "type": "Bot"}, "created_at": "2026-10-22T10:00:00Z",
+                "body": "the review\n<!-- compatibility-review {\"diff_sha256\": \"dd\", \"verdict\": \"breaking\"} -->"}
+        gh = FakeGitHub({
+            "/repos/o/r/issues/5/comments": ([mine, COMMENTS[1]], "c1"),
+            "/repos/o/r/issues/comments/950/reactions": ([{"content": "+1", "user": {"login": "a"}}], "r1"),
+            "/repos/o/r/pulls/5": ({"state": "open", "merged": False, "body": "x"}, "p1"),
+        })
+        out = feedback.refresh(gh, row(comment_id=None, diff_sha256="dd"))
+        self.assertEqual((out["resolved_comment_id"], out["resolved_posted_at"], out["thumbs_up"], out["reply_count"]),
+                         (950, "2026-10-22T10:00:00Z", 1, 1))
+        # no such comment any more: marked deleted, the pull request's state still fetched
+        gh2 = FakeGitHub({
+            "/repos/o/r/issues/5/comments": ([COMMENTS[1]], "c1"),
+            "/repos/o/r/pulls/5": ({"state": "closed", "merged": True, "body": "x"}, "p1"),
+        })
+        out = feedback.refresh(gh2, row(comment_id=None, diff_sha256="dd"))
+        self.assertEqual((out["comment_deleted"], out["pr_state"], out["merged"], out.get("resolved_comment_id")), (1, "closed", 1, None))
+
     def test_other_errors_propagate(self):
         class Broken:
             def get_if_changed(self, path, etag=None):

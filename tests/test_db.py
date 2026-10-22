@@ -80,7 +80,10 @@ class DBTest(unittest.TestCase):
             week_old = db.insert_review(result(2, "b", "d2", comment_id=2, posted_at=ts(days=20)))
             ancient = db.insert_review(result(3, "c", "d3", comment_id=3, posted_at=ts(days=200)))
             db.insert_review(result(4, "d", "d4"))  # never posted: never due
-            self.assertEqual(sorted(r["id"] for r in db.due_for_feedback(1800, now)), [fresh, week_old, ancient])
+            noted = db.insert_recovered("o", "r", 5, {"diff_sha256": "d5", "head": "e", "verdict": "none"}, posted_at=ts(days=1))
+            self.assertEqual(sorted(r["id"] for r in db.due_for_feedback(1800, now)), [fresh, week_old, ancient, noted])
+            self.assertIsNone(next(r for r in db.due_for_feedback(1800, now) if r["id"] == noted)["comment_id"])
+            db.upsert_feedback(noted, {"fetched_at": ts(minutes=1)})
             db.upsert_feedback(fresh, {"fetched_at": ts(minutes=10)})
             db.upsert_feedback(week_old, {"fetched_at": ts(hours=5)})
             db.upsert_feedback(ancient, {"fetched_at": ts(days=6)})

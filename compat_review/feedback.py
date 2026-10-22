@@ -10,10 +10,24 @@ from datetime import timedelta
 
 from .db import parse_ts, utcnow
 from .github import GitHubError
-from .post import BEGIN
+from .post import BEGIN, parse_record
 
 MENTION = re.compile(r"compatib|verdict|upgrade compatibility", re.I)
 EXCERPT = 300
+
+
+def _resolve_comment(gh, row, out):
+    """For a review recovered from the note in a PR description: find the bot's comment for the same diff.
+    Returns the row with the comment known, or None when there is no such comment."""
+    owner, repo, number = row["owner"], row["repo"], row["number"]
+    data, _ = gh.get_if_changed(f"/repos/{owner}/{repo}/issues/{number}/comments?per_page=100")
+    for c in data or []:
+        rec = parse_record(c.get("body"))
+        if rec and rec.get("diff_sha256") == row.get("diff_sha256"):
+            out["resolved_comment_id"], out["resolved_posted_at"] = c["id"], c.get("created_at")
+            return {**row, "comment_id": c["id"], "posted_at": c.get("created_at") or row.get("posted_at")}
+    out.update({"comment_deleted": 1, "thumbs_up": 0, "thumbs_down": 0, "other_reactions": 0, "reactors": []})
+    return None
 
 
 def _reactions(gh, row, out):
@@ -83,7 +97,11 @@ def refresh(gh, row):
                                    "comment_deleted", "note_present", "pr_state", "merged", "merged_at", "closed_at",
                                    "etag_reactions", "etag_comments", "etag_pull")}
     out["fetched_at"] = utcnow()
-    _reactions(gh, row, out)
-    _replies(gh, row, out)
-    _pull(gh, row, out)
+    pull_row = {k: row.get(k) for k in ("owner", "repo", "number", "etag_pull")}
+    if not row.get("comment_id"):
+        row = _resolve_comment(gh, row, out)
+    if row is not None:
+        _reactions(gh, row, out)
+        _replies(gh, row, out)
+    _pull(gh, pull_row, out)
     return out

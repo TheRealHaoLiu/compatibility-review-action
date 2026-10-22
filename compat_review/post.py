@@ -1,9 +1,13 @@
-"""What the bot writes on a pull request: the note in the description, and the gradable comment."""
+"""What the bot writes on a pull request: the note in the description, and the gradable comment.
+
+Both carry a hidden record (head, base, diff hash, versions, verdict, usage). GitHub is the system of
+record: with the database gone, the service reads these back and never reviews a diff twice.
+"""
 
 import json
 import re
 
-BEGIN = "<!-- compatibility-review:begin -->"
+BEGIN = "<!-- compatibility-review:begin"  # the opening marker; the record and " -->" follow
 END = "<!-- compatibility-review:end -->"
 MARK = "<!-- compatibility-review "
 BADGE = {"breaking": "🔴 Red", "notable": "🟡 Yellow", "none": "🟢 Green"}
@@ -21,12 +25,29 @@ MECHANISM = {
 
 
 def record(result):
-    """The machine-readable facts a grader needs later, kept small."""
+    """The machine-readable facts a grader, or a rebuilt database, needs later; kept small."""
     m = result.get("_meta", {})
-    return {"version": m.get("prompt"), "rule": m.get("rule"), "model": m.get("model"),
-            "head": m.get("head"), "base": m.get("base"), "diff_sha256": m.get("diff_sha256"),
-            "verdict": result.get("verdict"), "mechanism": result.get("q_mechanism"),
-            "prevalence": result.get("q_prevalence")}
+    rec = {"version": m.get("prompt"), "rule": m.get("rule"), "model": m.get("model"),
+           "head": m.get("head"), "base": m.get("base"), "diff_sha256": m.get("diff_sha256"),
+           "verdict": result.get("verdict"), "mechanism": result.get("q_mechanism"),
+           "prevalence": result.get("q_prevalence")}
+    usage = m.get("usage") or {}
+    if usage:
+        rec["usage"] = {k: int(usage.get(k) or 0) for k in ("in", "out", "reasoning")}
+    if m.get("latency_s") is not None:
+        rec["latency_s"] = m["latency_s"]
+    if m.get("posted_at"):
+        rec["posted_at"] = m["posted_at"]
+    return rec
+
+
+def parse_note_record(body):
+    """The hidden record out of the note in a PR description, or None."""
+    m = re.search(re.escape(BEGIN) + r" (\{.*?\}) -->", body or "", re.S)
+    try:
+        return json.loads(m.group(1)) if m else None
+    except ValueError:
+        return None
 
 
 def _lines(result):
@@ -50,7 +71,7 @@ def note(result):
     """The section spliced into the PR description."""
     m = result.get("_meta", {})
     head = (m.get("head") or "")[:7]
-    lines = [BEGIN, *_lines(result), "",
+    lines = [f"{BEGIN} {json.dumps(record(result), separators=(',', ':'))} -->", *_lines(result), "",
              f"<sub>compatibility-review {m.get('prompt', '')} · reviewed {head} · advisory, does not block merging</sub>",
              END]
     return "\n".join(lines)
@@ -80,4 +101,7 @@ def comment(result):
 def parse_record(comment_body):
     """The hidden record out of a bot comment, or None."""
     m = re.search(re.escape(MARK) + r"(\{.*?\}) -->", comment_body or "", re.S)
-    return json.loads(m.group(1)) if m else None
+    try:
+        return json.loads(m.group(1)) if m else None
+    except ValueError:
+        return None

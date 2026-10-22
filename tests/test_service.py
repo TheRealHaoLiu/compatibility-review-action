@@ -44,7 +44,9 @@ def make_repo(tmp):
 class FakeGitHub:
     def __init__(self):
         self.body = "Original description."
-        self.comments = []
+        self.posted = []
+        self.pr_comments = []
+        self.pages = {}
         self.pulls = []
 
     def git_auth_header(self):
@@ -56,13 +58,23 @@ class FakeGitHub:
     def open_pulls(self, owner, repo):
         return list(self.pulls)
 
+    def comments(self, owner, repo, number):
+        mine = [{"id": i + 1, "body": b, "created_at": "2026-10-22T10:00:00Z", "user": {"login": "bot", "type": "Bot"}}
+                for i, b in enumerate(self.posted)]
+        return mine + list(self.pr_comments)
+
+    def request(self, method, path, body=None):
+        import re
+        page = int(re.search(r"[?&]page=(\d+)", path).group(1))
+        return list(self.pages.get(page, []))
+
     def update_pull_body(self, owner, repo, number, body):
         self.body = body
         return {}
 
     def create_comment(self, owner, repo, number, body):
-        self.comments.append(body)
-        return {"id": len(self.comments)}
+        self.posted.append(body)
+        return {"id": len(self.posted)}
 
 
 def fake_reviewer(user, context, model, api, base_url, effort):
@@ -104,6 +116,9 @@ class ServiceTest(unittest.TestCase):
         self.assertTrue(once.startswith("Original description."))
         rec = post.parse_record(post.comment(result))
         self.assertEqual((rec["verdict"], rec["head"], rec["version"]), ("breaking", "abcdef1234567", "v9"))
+        note_rec = post.parse_note_record(once)
+        self.assertEqual((note_rec["diff_sha256"], note_rec["head"], note_rec["usage"]["in"]), ("ff" * 32, "abcdef1234567", 1))
+        self.assertIsNone(post.parse_note_record("no note here"))
 
     def test_handle_reviews_posts_and_caches(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -114,17 +129,17 @@ class ServiceTest(unittest.TestCase):
             result = service.handle(job, settings, gh, fake_reviewer, mirror=work)
             self.assertEqual(result["verdict"], "breaking")
             self.assertIn("🔴 Red", gh.body)
-            self.assertEqual(len(gh.comments), 1)
-            self.assertEqual(post.parse_record(gh.comments[0])["diff_sha256"], result["_meta"]["diff_sha256"])
+            self.assertEqual(len(gh.posted), 1)
+            self.assertEqual(post.parse_record(gh.posted[0])["diff_sha256"], result["_meta"]["diff_sha256"])
             self.assertEqual(result["_meta"]["comment_id"], 1)
             # same diff again: cached, nothing posted
             self.assertIsNone(service.handle(job, settings, gh, fake_reviewer, mirror=work))
-            self.assertEqual(len(gh.comments), 1)
+            self.assertEqual(len(gh.posted), 1)
             # a change touching only ignored paths is Green without the reviewer
             job2 = service.Job("o", "r", 2, "main", "docs", "")
             r2 = service.handle(job2, settings, gh, lambda *a: self.fail("model called"), mirror=work)
             self.assertEqual(r2["verdict"], "none")
-            self.assertEqual(len(gh.comments), 2)
+            self.assertEqual(len(gh.posted), 2)
 
     def test_stored_without_posting_is_posted_later_without_a_model_call(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -133,7 +148,7 @@ class ServiceTest(unittest.TestCase):
             job = service.Job("o", "r", 1, "main", "Deny link-local", "")
             quiet = service.Settings(data_dir=Path(tmp) / "data", model="m", post=False)
             first = service.handle(job, quiet, gh, fake_reviewer, mirror=work)
-            self.assertEqual(gh.comments, [])
+            self.assertEqual(gh.posted, [])
             self.assertNotIn("comment_id", first["_meta"])
             loud = service.Settings(data_dir=Path(tmp) / "data", model="m", post=True)
             again = service.handle(job, loud, gh, lambda *a: self.fail("model called"), mirror=work)
@@ -144,7 +159,7 @@ class ServiceTest(unittest.TestCase):
             self.assertIsNotNone(stored["posted_at"])
             self.assertEqual(stored["title"], "Deny link-local")
             self.assertIsNone(service.handle(job, loud, gh, lambda *a: self.fail("model called"), mirror=work))
-            self.assertEqual(len(gh.comments), 1)
+            self.assertEqual(len(gh.posted), 1)
 
     def test_draft_skipped(self):
         settings = service.Settings(data_dir=Path("/nonexistent"), model="m")
@@ -197,6 +212,80 @@ class ServiceTest(unittest.TestCase):
                     other.close()
             with service.DataLock(tmp):  # released: can be taken again
                 pass
+
+    def test_recovery_from_github_when_the_database_is_gone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = make_repo(tmp)
+            gh = FakeGitHub()
+            job = service.Job("o", "r", 1, "main", "Deny link-local", "")
+            first = service.handle(job, service.Settings(data_dir=Path(tmp) / "d1", model="m", post=True), gh, fake_reviewer, mirror=work)
+            diff_sha = first["_meta"]["diff_sha256"]
+            self.assertEqual(len(gh.posted), 1)
+            self.assertEqual(post.parse_note_record(gh.body)["diff_sha256"], diff_sha)
+            # database gone; the note in the description still says this diff was reviewed
+            fresh = service.Settings(data_dir=Path(tmp) / "d2", model="m", post=True)
+            job2 = service.Job("o", "r", 1, "main", "Deny link-local", gh.body)
+            self.assertIsNone(service.handle(job2, fresh, gh, lambda *a: self.fail("model called"), mirror=work))
+            self.assertEqual(len(gh.posted), 1)  # not posted again
+            row = fresh.database().find_review("o", "r", 1, diff_sha)
+            self.assertIsNotNone(row["posted_at"])
+            self.assertIsNone(row["comment_id"])
+            self.assertEqual((row["verdict"], row["tokens_in"], row["title"]), ("breaking", 1, "Deny link-local"))
+            self.assertEqual(fresh.database().reviewed_heads("o", "r", posted_only=True), {1: row["head"]})
+            # note removed from the description too, but the bot's comment remains: recovered from it
+            fresh3 = service.Settings(data_dir=Path(tmp) / "d3", model="m", post=True)
+            job3 = service.Job("o", "r", 1, "main", "Deny link-local", "Original description.")
+            self.assertIsNone(service.handle(job3, fresh3, gh, lambda *a: self.fail("model called"), mirror=work))
+            self.assertEqual(fresh3.database().find_review("o", "r", 1, diff_sha)["comment_id"], 1)
+            self.assertEqual(len(gh.posted), 1)
+            # nothing on GitHub either: reviewed again, as it must be
+            fresh4 = service.Settings(data_dir=Path(tmp) / "d4", model="m", post=True)
+            again = service.handle(service.Job("o", "r", 1, "main", "t", ""), fresh4, FakeGitHub(), fake_reviewer, mirror=work)
+            self.assertEqual(again["verdict"], "breaking")
+
+    def test_poller_trusts_the_note_in_the_description(self):
+        result = fake_reviewer("## Repository facts\n#### app/allow.py: load", "A product.", "m", "responses", None, "medium")
+        result["_meta"].update({"head": "eee", "base": "b" * 40, "diff_sha256": "cd" * 32, "posted_at": "2026-10-20T00:00:00+00:00"})
+        gh = FakeGitHub()
+        gh.pulls = [{"number": 5, "head": {"sha": "eee"}, "base": {"ref": "main"}, "title": "T", "draft": False,
+                     "body": post.splice("desc", post.note(result))}]
+
+        class StubWorker:
+            pass
+
+        StubWorker.queue = queue.Queue()
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = service.Settings(data_dir=Path(tmp), model="m", post=True)
+            poller = service.Poller(settings, StubWorker, [("o", "r")], 60, client=lambda s, o, r: (gh, None), max_age_days=0)
+            with self.assertLogs("compatibility-review", level="INFO") as logs:
+                self.assertEqual(poller.scan(), [])
+            self.assertIn("recorded without a fetch", logs.output[0])
+            row = settings.database().find_review("o", "r", 5, "cd" * 32)
+            self.assertEqual((row["verdict"], row["posted_at"], row["title"]), ("breaking", "2026-10-20T00:00:00+00:00", "T"))
+            gh.pulls[0]["head"]["sha"] = "ee2"  # pushed since: reviewed anew
+            self.assertEqual([j.number for j in poller.scan()], [5])
+
+    def test_rebuild_from_notes(self):
+        from datetime import datetime, timedelta, timezone
+
+        result = fake_reviewer("## Repository facts\n#### app/allow.py: load", "A product.", "m", "responses", None, "medium")
+        result["_meta"].update({"head": "h" * 40, "base": "b" * 40, "diff_sha256": "ab" * 32, "posted_at": "2026-10-20T00:00:00+00:00"})
+        body = post.splice("desc", post.note(result))
+        when = lambda days: (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")  # noqa: E731
+        gh = FakeGitHub()
+        gh.pages = {1: [{"number": 7, "updated_at": when(1), "body": body, "title": "T"},
+                        {"number": 8, "updated_at": when(2), "body": "no note"},
+                        {"number": 9, "updated_at": when(200), "body": body}]}  # older than the window: stops there
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = service.Settings(data_dir=Path(tmp), model="m", price_in=0.1, price_out=0.5)
+            client = lambda s, o, r: (gh, None)  # noqa: E731
+            self.assertEqual(service.rebuild_from_notes(settings, "o", "r", 90, client=client), 1)
+            row = settings.database().find_review("o", "r", 7, "ab" * 32)
+            self.assertEqual((row["verdict"], row["title"], row["posted_at"], row["tokens_in"]),
+                             ("breaking", "T", "2026-10-20T00:00:00+00:00", 1))
+            self.assertAlmostEqual(row["cost_usd"], (1 * 0.1 + 1 * 0.5) / 1e6)
+            self.assertEqual(service.rebuild_from_notes(settings, "o", "r", 90, client=client), 0)
+            self.assertIsNone(settings.database().find_review("o", "r", 9, "ab" * 32))
 
     def test_clear_tmp_removes_only_extraction_directories(self):
         with tempfile.TemporaryDirectory() as tmp:

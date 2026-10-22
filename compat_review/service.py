@@ -228,12 +228,38 @@ def reviewed_heads(settings, owner, repo):
 
 def publish(gh, job, result, db, review_id):
     """The note into the PR description and the gradable comment; the record notes the comment."""
+    result["_meta"]["posted_at"] = utcnow()
     pr = gh.pull(job.owner, job.repo, job.number)
     gh.update_pull_body(job.owner, job.repo, job.number, post.splice(pr.get("body"), post.note(result)))
     c = gh.create_comment(job.owner, job.repo, job.number, post.comment(result))
     result["_meta"]["comment_id"] = c.get("id")
-    result["_meta"]["posted_at"] = utcnow()
     db.mark_posted(review_id, c.get("id"), result["_meta"]["posted_at"])
+
+
+def recover(db, gh, job, diff_sha, settings):
+    """With no database row for this diff, look for the bot's own record on GitHub: the note in the
+    description first (already in hand), then the bot's comments. Stores and returns the row, or None.
+    This is what keeps a diff from being reviewed twice when the database is gone."""
+    rec = post.parse_note_record(job.body)
+    if rec and rec.get("diff_sha256") == diff_sha:
+        db.insert_recovered(job.owner, job.repo, job.number, rec, title=job.title,
+                            price_in=settings.price_in, price_out=settings.price_out)
+        log.info("%s/%s#%s: diff %s recovered from the note in the description", job.owner, job.repo, job.number, diff_sha[:12])
+        return db.find_review(job.owner, job.repo, job.number, diff_sha)
+    try:
+        comments = gh.comments(job.owner, job.repo, job.number)
+    except (GitHubError, OSError) as e:
+        log.warning("%s/%s#%s: could not read comments to look for an earlier review: %s",
+                    job.owner, job.repo, job.number, str(e)[:200])
+        return None
+    for c in comments:
+        rec = post.parse_record(c.get("body"))
+        if rec and rec.get("diff_sha256") == diff_sha:
+            db.insert_recovered(job.owner, job.repo, job.number, rec, comment_id=c.get("id"), posted_at=c.get("created_at"),
+                                title=job.title, price_in=settings.price_in, price_out=settings.price_out)
+            log.info("%s/%s#%s: diff %s recovered from the bot's comment", job.owner, job.repo, job.number, diff_sha[:12])
+            return db.find_review(job.owner, job.repo, job.number, diff_sha)
+    return None
 
 
 def handle(job, settings, gh=None, reviewer=review.review, mirror=None):
@@ -272,9 +298,9 @@ def _review(job, settings, gh, reviewer, mirror):
     merge_base, head_sha, diff = diff_from_merge_base(mirror, f"refs/heads/{job.base_ref}", head_ref)
     diff_sha = hashlib.sha256(diff.encode()).hexdigest()
     db = settings.database()
-    stored = db.find_review(job.owner, job.repo, job.number, diff_sha)
+    stored = db.find_review(job.owner, job.repo, job.number, diff_sha) or recover(db, gh, job, diff_sha, settings)
     if stored:
-        if settings.post and stored["comment_id"] is None:
+        if settings.post and stored["posted_at"] is None:
             result = json.loads(stored["result_json"])
             publish(gh, job, result, db, stored["id"])
             log.info("%s/%s#%s: diff %s reviewed earlier, posted now", job.owner, job.repo, job.number, diff_sha[:12])
@@ -370,7 +396,8 @@ class Poller(threading.Thread):
                 for number, head in reviewed_heads(self.settings, owner, repo).items():
                     self.seen[(owner, repo, number)] = head
                 self.loaded.add((owner, repo))
-            stale = []
+            stale, recovered = [], []
+            db = self.settings.database()
             for pr in pulls:
                 key, head = (owner, repo, pr["number"]), pr["head"]["sha"]
                 if self.seen.get(key) == head:
@@ -378,6 +405,14 @@ class Poller(threading.Thread):
                 if pr.get("draft") and self.settings.skip_drafts:
                     continue  # not remembered: reviewed once it is ready
                 self.seen[key] = head
+                rec = post.parse_note_record(pr.get("body"))
+                if rec and rec.get("head") == head and rec.get("diff_sha256"):
+                    # the note in the description says this head was reviewed: nothing to fetch or call
+                    if not db.find_review(owner, repo, pr["number"], rec["diff_sha256"]):
+                        db.insert_recovered(owner, repo, pr["number"], rec, title=pr.get("title"),
+                                            price_in=self.settings.price_in, price_out=self.settings.price_out)
+                        recovered.append(pr["number"])
+                    continue
                 age = age_days(pr.get("updated_at"))
                 if self.max_age_days and age is not None and age > self.max_age_days:
                     stale.append(pr["number"])
@@ -390,6 +425,9 @@ class Poller(threading.Thread):
                 log.info("%s/%s: %s pull request%s not updated in %s days, left alone until pushed: %s", owner, repo,
                          len(stale), "" if len(stale) == 1 else "s", self.max_age_days,
                          ", ".join(f"#{n}" for n in stale[:20]) + (" ..." if len(stale) > 20 else ""))
+            if recovered:
+                log.info("%s/%s: %s review%s already on the pull requests, recorded without a fetch", owner, repo,
+                         len(recovered), "" if len(recovered) == 1 else "s")
         return queued
 
     def run(self):
@@ -421,7 +459,10 @@ class FeedbackPoller(threading.Thread):
             try:
                 if key not in clients:
                     clients[key] = self.client(self.settings, *key)[0]
-                db.upsert_feedback(row["id"], feedback.refresh(clients[key], row))
+                fields = feedback.refresh(clients[key], row)
+                if fields.get("resolved_comment_id"):  # a review recovered from a note now knows its comment
+                    db.mark_posted(row["id"], fields["resolved_comment_id"], fields.get("resolved_posted_at"))
+                db.upsert_feedback(row["id"], fields)
                 ok += 1
             except (GitHubError, RuntimeError, OSError) as e:
                 failed += 1
@@ -438,6 +479,34 @@ class FeedbackPoller(threading.Thread):
             except Exception:  # noqa: BLE001 - keep going
                 log.exception("feedback refresh failed")
             self.stop.wait(self.interval)
+
+
+def rebuild_from_notes(settings, owner, repo, days, client=client_for_repo):
+    """Reviews recorded in the notes on pull requests updated in the last `days` days, into the database.
+
+    One request per hundred pull requests, newest first, and no model call: the record in each note
+    carries the verdict, the versions and the token usage. This is how the metrics survive a restart
+    that loses the database. Returns how many reviews were new to the database.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    db = settings.database()
+    gh, _ = client(settings, owner, repo)
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    n, page = 0, 1
+    while True:
+        pulls = gh.request("GET", f"/repos/{owner}/{repo}/pulls?state=all&sort=updated&direction=desc&per_page=100&page={page}")
+        for pr in pulls:
+            if (pr.get("updated_at") or "") < cutoff:
+                return n
+            rec = post.parse_note_record(pr.get("body"))
+            if rec and rec.get("diff_sha256") and not db.find_review(owner, repo, pr["number"], rec["diff_sha256"]):
+                db.insert_recovered(owner, repo, pr["number"], rec, title=pr.get("title"),
+                                    price_in=settings.price_in, price_out=settings.price_out)
+                n += 1
+        if len(pulls) < 100:
+            return n
+        page += 1
 
 
 def parse_repos(values):
@@ -594,6 +663,15 @@ def main(argv=None):
         print(json.dumps(result, indent=1) if result else "nothing reviewed")
         return 0
 
+    if cfg.REBUILD_DAYS and repos:
+        for owner, repo in repos:
+            try:
+                n = rebuild_from_notes(settings, owner, repo, cfg.REBUILD_DAYS)
+                if n:
+                    log.info("%s/%s: %s review%s rebuilt from notes on pull requests updated in the last %g days",
+                             owner, repo, n, "" if n == 1 else "s", cfg.REBUILD_DAYS)
+            except (GitHubError, RuntimeError, OSError) as e:
+                log.warning("%s/%s: rebuild from notes failed: %s", owner, repo, str(e)[:300])
     worker = Worker(settings)
     worker.start()
     log.info("posting %s, data in %s", "on" if settings.post else "off", settings.data_dir)

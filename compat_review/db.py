@@ -94,6 +94,21 @@ def review_fields(result, title=None, base_ref=None, price_in=None, price_out=No
     }
 
 
+COLORS = {"breaking": "Red", "notable": "Yellow", "none": "Green"}
+
+
+def recovered_result(owner, repo, number, rec, comment_id=None, posted_at=None):
+    """A result rebuilt from a record the bot left on GitHub: enough for the cache and the metrics."""
+    verdict = rec.get("verdict") or "none"
+    return {"verdict": verdict, "color": COLORS.get(verdict), "findings": [],
+            "q_mechanism": rec.get("mechanism"), "q_prevalence": rec.get("prevalence"),
+            "_meta": {"owner": owner, "repo": repo, "number": number, "head": rec.get("head"), "base": rec.get("base"),
+                      "diff_sha256": rec["diff_sha256"], "prompt": rec.get("version"), "rule": rec.get("rule"),
+                      "model": rec.get("model"), "usage": rec.get("usage") or {}, "latency_s": rec.get("latency_s"),
+                      "recovered": True, "comment_id": comment_id,
+                      "posted_at": posted_at or rec.get("posted_at") or utcnow()}}
+
+
 class DB:
     def __init__(self, path):
         self.path = Path(path)
@@ -143,19 +158,26 @@ class DB:
                    [f[c] for c in REVIEW_COLUMNS])
         return self.find_review(f["owner"], f["repo"], f["number"], f["diff_sha256"])["id"]
 
+    def insert_recovered(self, owner, repo, number, rec, comment_id=None, posted_at=None, title=None,
+                         price_in=None, price_out=None):
+        """Store a review known only from a record the bot left on GitHub. Returns the row id."""
+        result = recovered_result(owner, repo, number, rec, comment_id, posted_at)
+        return self.insert_review(result, title=title, reviewed_at=result["_meta"]["posted_at"],
+                                  price_in=price_in, price_out=price_out)
+
     def find_review(self, owner, repo, number, diff_sha256):
         return self._one("SELECT * FROM reviews WHERE owner = ? AND repo = ? AND number = ? AND diff_sha256 = ?",
                          (owner, repo, number, diff_sha256))
 
     def mark_posted(self, review_id, comment_id, posted_at=None):
-        self._exec("UPDATE reviews SET comment_id = ?, posted_at = ? WHERE id = ?",
-                   (comment_id, posted_at or utcnow(), review_id))
+        self._exec("UPDATE reviews SET comment_id = ?, posted_at = COALESCE(?, posted_at, ?) WHERE id = ?",
+                   (comment_id, posted_at, utcnow(), review_id))
 
     def reviewed_heads(self, owner, repo, posted_only=False):
         """{number: head} of this repository's stored reviews, latest review of a number winning."""
         sql = "SELECT number, head FROM reviews WHERE owner = ? AND repo = ? AND head IS NOT NULL"
         if posted_only:
-            sql += " AND comment_id IS NOT NULL"
+            sql += " AND posted_at IS NOT NULL"
         return {r["number"]: r["head"] for r in self._all(sql + " ORDER BY reviewed_at, id", (owner, repo))}
 
     def repos(self):
@@ -188,12 +210,13 @@ class DB:
 
     def due_for_feedback(self, interval_s, now=None):
         """Posted reviews whose feedback is due a refresh: every interval for a week after posting,
-        every six hours for two months, weekly after that."""
+        every six hours for two months, weekly after that. A review recovered from the note in a PR
+        description has no comment id yet; the refresh finds the comment first."""
         now = now or datetime.now(timezone.utc)
         due = []
-        for r in self._all("SELECT r.id, r.owner, r.repo, r.number, r.comment_id, r.posted_at, r.verdict, "
+        for r in self._all("SELECT r.id, r.owner, r.repo, r.number, r.comment_id, r.posted_at, r.verdict, r.diff_sha256, "
                            + ", ".join(f"f.{c} AS {'feedback_fetched_at' if c == 'fetched_at' else c}" for c in FEEDBACK_COLUMNS)
-                           + " FROM reviews r LEFT JOIN feedback f ON f.review_id = r.id WHERE r.comment_id IS NOT NULL"):
+                           + " FROM reviews r LEFT JOIN feedback f ON f.review_id = r.id WHERE r.posted_at IS NOT NULL"):
             posted = parse_ts(r["posted_at"]) or now
             age_days = (now - posted).total_seconds() / 86400
             every = interval_s if age_days < 7 else 6 * 3600 if age_days < 60 else 7 * 86400

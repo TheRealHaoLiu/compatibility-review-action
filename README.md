@@ -83,6 +83,20 @@ compatibility-review-report --data ./data --since 30 --repo owner/repo --format 
 
 Costs need the model's prices in dollars per million tokens, `COMPAT_REVIEW_PRICE_IN_PER_M` and `COMPAT_REVIEW_PRICE_OUT_PER_M`; without them the dashboard shows n/a. Set `COMPAT_REVIEW_DASHBOARD_TOKEN` and the dashboard and exports require `?token=...` or an `Authorization: Bearer` header; `/healthz` never does. If the service's port is reachable from the internet for webhooks, set the token or keep the dashboard behind your proxy, because it names the pull requests it reviewed.
 
+### Nothing twice, and nothing lost with the database
+
+GitHub is the system of record. The note in the PR description and the bot's comment both carry a hidden record: the head and base commits, the diff hash, the prompt, rule and model versions, the verdict, and the token usage. Everything under the data directory is a cache that can disappear.
+
+What keeps a diff from being reviewed twice, cheapest first:
+
+1. Webhook events arrive only on a change. The poller compares each open PR's head to what it last saw, and to the record in the PR's own description, which it already has from the listing: a PR whose note names its current head costs nothing, not even a fetch.
+2. A diff with a hash already in the database is not reviewed again, so a force-push with the same content costs nothing.
+3. With no database row, the service reads the note in the description, then the bot's comments, before calling the model. A diff recorded there is stored back into the database and not reviewed or posted again.
+
+So a restart with an empty data directory re-clones the mirrors and otherwise picks up where it left off, with no duplicate comments. With posting off nothing is written to GitHub, so a lost database does mean a second model call there.
+
+The metrics survive the same way: at startup the service reads the notes on the polled repositories' pull requests updated in the last `rebuild_days` days (default 90, one request per hundred pull requests) and rebuilds the database from them, including verdicts and token usage; costs are recomputed at the configured prices. The feedback thread then finds each rebuilt review's comment on its next pass. What a lost database does not bring back: metrics older than that window, and the feedback already collected, which is fetched again.
+
 ### Storage
 
 The data directory holds three things, and none of them needs watching:
