@@ -1,19 +1,22 @@
 # compatibility-review settings.
 #
 # Copy to settings.toml in the directory you run from (or any parent of it), or pass --config FILE.
-# Put tokens in .secrets.toml, same format, which git ignores. Every key is also an environment
-# variable with the prefix COMPAT_REVIEW_ (COMPAT_REVIEW_MODEL, COMPAT_REVIEW_POLL_REPOS, ...),
-# which overrides the file; the conventional GITHUB_TOKEN, GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY,
-# GITHUB_APP_PRIVATE_KEY_FILE, GITHUB_WEBHOOK_SECRET, OPENAI_BASE_URL, OPENAI_API_KEY,
-# ANTHROPIC_API_KEY and PORT are honored as well. Command-line flags override everything.
+# Anything secret goes in .secrets.toml, same format, same directory: api_key, headers when a
+# gateway's header carries a key, github_token, github_webhook_secret. Both settings.toml and
+# .secrets.toml are git-ignored in this repository, so a copy made inside a checkout cannot be
+# committed by accident. Every key is also an environment variable with the prefix COMPAT_REVIEW_
+# (COMPAT_REVIEW_MODEL, COMPAT_REVIEW_POLL_REPOS, ...), which overrides the file; the conventional
+# GITHUB_TOKEN, GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, GITHUB_APP_PRIVATE_KEY_FILE,
+# GITHUB_WEBHOOK_SECRET, OPENAI_BASE_URL, OPENAI_API_KEY, ANTHROPIC_API_KEY and PORT are honored as
+# well. Command-line flags override everything.
 
 # The model
 model = "your-model-name"            # required
 api = "responses"                    # responses | chat | anthropic
 effort = "medium"                    # low | medium | high
 base_url = "https://your-endpoint"   # any OpenAI-compatible gateway; for api = "anthropic", the Anthropic base URL
-# api_key = "..."                    # better in .secrets.toml
-# headers = { "x-extra-header" = "value" }   # extra request headers a gateway needs
+# api_key = "..."                    # secret: put it in .secrets.toml
+# headers = { "x-extra-header" = "value" }   # extra request headers a gateway needs; if the value is a key, .secrets.toml
 timeout = 300                        # seconds per model call
 attempts = 4                         # tries per review on retryable errors
 # price_in_per_m = 0.10              # dollars per million input tokens, for the dashboard's costs
@@ -31,7 +34,7 @@ feedback_interval = 1800             # seconds between feedback refreshes of rec
 # dashboard_token = "..."            # if set, the dashboard and exports require ?token= or a Bearer header
 
 # GitHub: a personal token (enough for poll mode and --once) or an App (webhook mode; works for polling too)
-# github_token = "..."               # better in .secrets.toml
+# github_token = "..."               # secret: put it in .secrets.toml
 # github_app_id = 12345
-# github_app_private_key_file = "app.pem"
-# github_webhook_secret = "..."      # better in .secrets.toml
+# github_app_private_key_file = "app.pem"   # *.pem is git-ignored here too
+# github_webhook_secret = "..."      # secret: put it in .secrets.toml

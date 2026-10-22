@@ -219,6 +219,8 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# compatibility-review local configuration
-.secrets.toml
+# compatibility-review local configuration and secrets: never commit a real one
+settings.toml
 settings.local.toml
+.secrets.toml
+*.pem
