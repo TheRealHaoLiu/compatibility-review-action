@@ -12,9 +12,16 @@ the tree before the change, one model call, then the note in the PR description 
 comment. A diff already reviewed (same sha256) is not reviewed again; a result stored while
 posting was off is posted, without a new model call, the next time it comes up with posting on.
 
+Every review goes into the SQLite database under the data directory, a background thread keeps
+the feedback on posted reviews current (reactions, replies, the pull request's fate), and the
+HTTP server serves a live dashboard at / with CSV, JSON and Markdown exports.
+
 Environment:
   GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY (PEM) or GITHUB_APP_PRIVATE_KEY_FILE, GITHUB_WEBHOOK_SECRET
   GITHUB_TOKEN              a personal token instead of the App; enough for poll mode and --once
+  COMPAT_REVIEW_PRICE_IN_PER_M, COMPAT_REVIEW_PRICE_OUT_PER_M  dollars per million tokens, for costs
+  COMPAT_REVIEW_FEEDBACK_INTERVAL  seconds between feedback refreshes of recent reviews; default 1800
+  COMPAT_REVIEW_DASHBOARD_TOKEN  if set, the dashboard and exports need ?token= or a Bearer header
   COMPAT_REVIEW_POLL_REPOS  repositories to poll, comma-separated (same as --poll)
   COMPAT_REVIEW_POLL_INTERVAL seconds between polls (same as --interval); default 60
   COMPAT_REVIEW_POLL_MAX_AGE_DAYS leave pull requests not updated in this many days alone until
@@ -38,6 +45,7 @@ import sys
 import tempfile
 import threading
 import tomllib
+import urllib.parse
 from dataclasses import dataclass
 
 try:
@@ -47,8 +55,9 @@ except ImportError:  # Windows: no cross-process lock; one process per data dire
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import PROMPT_VERSION, RULE_VERSION, enrich, post, review, scope
+from . import PROMPT_VERSION, RULE_VERSION, enrich, feedback, post, report, review, scope
 from .change import build_input, diff_from_merge_base, extract_tree, read_config, context_file
+from .db import DB, utcnow
 from .github import GitHub, GitHubError
 from . import mirror as mirrors
 
@@ -66,10 +75,20 @@ class Settings:
     post: bool = True
     skip_drafts: bool = True
     max_mirror_bytes: int = 50 * 1024**3
+    price_in: float | None = None
+    price_out: float | None = None
+    feedback_interval: int = 1800
+    dashboard_token: str | None = None
     app_id: str | None = None
     private_key: str | None = None
     webhook_secret: str | None = None
     token: str | None = None
+    db: object = None
+
+    def database(self):
+        if self.db is None:
+            self.db = DB(self.data_dir / "compat-review.sqlite3")
+        return self.db
 
     @classmethod
     def from_env(cls, data_dir=None, post=True, max_mirrors_gb=None):
@@ -77,6 +96,7 @@ class Settings:
         if not key and os.environ.get("GITHUB_APP_PRIVATE_KEY_FILE"):
             key = Path(os.environ["GITHUB_APP_PRIVATE_KEY_FILE"]).read_text()
         gb = max_mirrors_gb if max_mirrors_gb is not None else float(os.environ.get("COMPAT_REVIEW_MAX_MIRRORS_GB", "50"))
+        price = lambda name: float(os.environ[name]) if os.environ.get(name) else None  # noqa: E731
         return cls(data_dir=Path(data_dir or os.environ.get("COMPAT_REVIEW_DATA", "data")),
                    model=os.environ.get("COMPAT_REVIEW_MODEL", ""),
                    api=os.environ.get("COMPAT_REVIEW_API", "responses"),
@@ -84,6 +104,9 @@ class Settings:
                    base_url=os.environ.get("COMPAT_REVIEW_BASE_URL"), post=post,
                    skip_drafts=os.environ.get("COMPAT_REVIEW_SKIP_DRAFTS", "1") != "0",
                    max_mirror_bytes=int(gb * 1024**3),
+                   price_in=price("COMPAT_REVIEW_PRICE_IN_PER_M"), price_out=price("COMPAT_REVIEW_PRICE_OUT_PER_M"),
+                   feedback_interval=int(os.environ.get("COMPAT_REVIEW_FEEDBACK_INTERVAL", "1800")),
+                   dashboard_token=os.environ.get("COMPAT_REVIEW_DASHBOARD_TOKEN") or None,
                    app_id=os.environ.get("GITHUB_APP_ID"), private_key=key,
                    webhook_secret=os.environ.get("GITHUB_WEBHOOK_SECRET"),
                    token=os.environ.get("GITHUB_TOKEN"))
@@ -218,28 +241,17 @@ def reviewed_heads(settings, owner, repo):
 
     With posting on, a result stored while posting was off does not count: it still has to be posted.
     """
-    out = {}
-    d = settings.data_dir / "reviews" / f"{owner}-{repo}"
-    files = sorted(d.glob("*.json"), key=lambda f: f.stat().st_mtime) if d.is_dir() else []
-    for f in files:
-        try:
-            meta = json.loads(f.read_text()).get("_meta", {})
-        except ValueError:
-            continue
-        if settings.post and "comment_id" not in meta:
-            continue
-        if meta.get("number") and meta.get("head"):
-            out[meta["number"]] = meta["head"]
-    return out
+    return settings.database().reviewed_heads(owner, repo, posted_only=settings.post)
 
 
-def publish(gh, job, result, out):
-    """The note into the PR description and the gradable comment; the stored result records the comment."""
+def publish(gh, job, result, db, review_id):
+    """The note into the PR description and the gradable comment; the record notes the comment."""
     pr = gh.pull(job.owner, job.repo, job.number)
     gh.update_pull_body(job.owner, job.repo, job.number, post.splice(pr.get("body"), post.note(result)))
     c = gh.create_comment(job.owner, job.repo, job.number, post.comment(result))
     result["_meta"]["comment_id"] = c.get("id")
-    out.write_text(json.dumps(result, indent=1) + "\n")
+    result["_meta"]["posted_at"] = utcnow()
+    db.mark_posted(review_id, c.get("id"), result["_meta"]["posted_at"])
 
 
 def handle(job, settings, gh=None, reviewer=review.review, mirror=None):
@@ -277,11 +289,12 @@ def _review(job, settings, gh, reviewer, mirror):
     head_ref = f"refs/pull/{job.number}/head"
     merge_base, head_sha, diff = diff_from_merge_base(mirror, f"refs/heads/{job.base_ref}", head_ref)
     diff_sha = hashlib.sha256(diff.encode()).hexdigest()
-    out = reviews_dir(settings, job.owner, job.repo) / f"{job.number}-{diff_sha[:12]}.json"
-    if out.exists():
-        result = json.loads(out.read_text())
-        if settings.post and "comment_id" not in result["_meta"]:
-            publish(gh, job, result, out)
+    db = settings.database()
+    stored = db.find_review(job.owner, job.repo, job.number, diff_sha)
+    if stored:
+        if settings.post and stored["comment_id"] is None:
+            result = json.loads(stored["result_json"])
+            publish(gh, job, result, db, stored["id"])
             log.info("%s/%s#%s: diff %s reviewed earlier, posted now", job.owner, job.repo, job.number, diff_sha[:12])
             return result
         log.info("%s/%s#%s: diff %s already reviewed", job.owner, job.repo, job.number, diff_sha[:12])
@@ -305,11 +318,13 @@ def _review(job, settings, gh, reviewer, mirror):
         else:
             context = (Path(__file__).resolve().parent / "context.md").read_text()
         result = reviewer(user, context, settings.model, settings.api, settings.base_url, settings.effort)
-    result["_meta"].update({"owner": job.owner, "repo": job.repo, "number": job.number,
-                            "base": merge_base, "head": head_sha, "diff_sha256": diff_sha})
-    out.write_text(json.dumps(result, indent=1) + "\n")  # stored first: a failed post never costs a second model call
+    result["_meta"].update({"owner": job.owner, "repo": job.repo, "number": job.number, "base": merge_base,
+                            "head": head_sha, "diff_sha256": diff_sha, "reviewed_at": utcnow()})
+    # stored first: a failed post never costs a second model call
+    review_id = db.insert_review(result, title=job.title, base_ref=job.base_ref,
+                                 price_in=settings.price_in, price_out=settings.price_out)
     if settings.post:
-        publish(gh, job, result, out)
+        publish(gh, job, result, db, review_id)
     log.info("%s/%s#%s: %s (%s)", job.owner, job.repo, job.number, result["verdict"], diff_sha[:12])
     return result
 
@@ -406,6 +421,43 @@ class Poller(threading.Thread):
             self.stop.wait(self.interval)
 
 
+class FeedbackPoller(threading.Thread):
+    """Keeps the feedback on posted reviews current: every interval for a week after posting, then every
+    six hours for two months, then weekly. Three conditional GETs per review, free when unchanged."""
+
+    def __init__(self, settings, interval, client=client_for_repo):
+        super().__init__(daemon=True)
+        self.settings, self.interval, self.client = settings, interval, client
+        self.stop = threading.Event()
+
+    def refresh_due(self):
+        """One pass. Returns (refreshed, failed)."""
+        db = self.settings.database()
+        clients, ok, failed = {}, 0, 0
+        for row in db.due_for_feedback(self.interval):
+            key = (row["owner"], row["repo"])
+            try:
+                if key not in clients:
+                    clients[key] = self.client(self.settings, *key)[0]
+                db.upsert_feedback(row["id"], feedback.refresh(clients[key], row))
+                ok += 1
+            except (GitHubError, RuntimeError, OSError) as e:
+                failed += 1
+                log.error("%s/%s#%s: feedback refresh failed: %s", row["owner"], row["repo"], row["number"], str(e)[:300])
+        return ok, failed
+
+    def run(self):
+        while not self.stop.is_set():
+            try:
+                ok, failed = self.refresh_due()
+                if ok or failed:
+                    log.info("feedback: refreshed %s review%s%s", ok, "" if ok == 1 else "s",
+                             f", {failed} failed" if failed else "")
+            except Exception:  # noqa: BLE001 - keep going
+                log.exception("feedback refresh failed")
+            self.stop.wait(self.interval)
+
+
 def parse_repos(values):
     """['o/r', 'o2/r2,o3/r3'] -> [('o', 'r'), ('o2', 'r2'), ('o3', 'r3')]."""
     repos = []
@@ -418,26 +470,66 @@ def parse_repos(values):
     return repos
 
 
-def make_handler(settings, worker):
+def make_handler(settings, worker, webhook=True):
+    dashboard = Path(__file__).resolve().parent / "dashboard.html"
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
             log.debug(fmt, *args)
 
-        def _reply(self, code, text):
+        def _reply(self, code, text, content_type="text/plain; charset=utf-8", filename=None):
             body = text.encode()
             self.send_response(code)
-            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            if filename:
+                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
             self.end_headers()
             self.wfile.write(body)
 
+        def _authorized(self, params):
+            if not settings.dashboard_token:
+                return True
+            given = (params.get("token") or [None])[0]
+            auth = self.headers.get("Authorization") or ""
+            if auth.startswith("Bearer "):
+                given = given or auth[7:]
+            return bool(given) and hmac.compare_digest(given, settings.dashboard_token)
+
         def do_GET(self):
-            if self.path == "/healthz":
+            path, _, query = self.path.partition("?")
+            params = urllib.parse.parse_qs(query)
+            if path == "/healthz":
                 return self._reply(200, "ok\n")
-            self._reply(404, "not found\n")
+            if path not in ("/", "/api/summary", "/api/reviews", "/export.csv", "/export.json", "/report.md"):
+                return self._reply(404, "not found\n")
+            if not self._authorized(params):
+                return self._reply(401, "a dashboard token is required\n")
+            if path == "/":
+                return self._reply(200, dashboard.read_text(), "text/html; charset=utf-8")
+            since = (params.get("since") or [None])[0]
+            since = None if since in (None, "", "all") else float(since)
+            repo = (params.get("repo") or [None])[0] or None
+            db = settings.database()
+            if path == "/api/summary":
+                return self._reply(200, json.dumps(report.summarize(db.rows(since, repo))), "application/json")
+            if path == "/api/reviews":
+                limit = int((params.get("limit") or ["100"])[0])
+                return self._reply(200, json.dumps(report.grade_rows(db.rows(since, repo, limit))), "application/json")
+            stamp = utcnow()[:10]
+            if path == "/export.csv":
+                return self._reply(200, report.render_csv(db.rows(since, repo)), "text/csv; charset=utf-8",
+                                   f"compatibility-review-{stamp}.csv")
+            if path == "/export.json":
+                return self._reply(200, report.render_json(db.rows(since, repo)), "application/json",
+                                   f"compatibility-review-{stamp}.json")
+            window = f"last {since:g} days" if since else "all time"
+            return self._reply(200, report.render_md(report.summarize(db.rows(since, repo)), window=window, repo=repo),
+                               "text/markdown; charset=utf-8", f"compatibility-review-{stamp}.md")
 
         def do_POST(self):
-            if self.path != "/webhook":
+            if self.path != "/webhook" or not webhook:
                 return self._reply(404, "not found\n")
             body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
             if not verify(settings.webhook_secret, body, self.headers.get("X-Hub-Signature-256")):
@@ -470,7 +562,8 @@ def main(argv=None):
                     default=float(os.environ.get("COMPAT_REVIEW_POLL_MAX_AGE_DAYS", "7")),
                     help="poll mode: leave pull requests not updated in this many days alone until pushed "
                          "(default: COMPAT_REVIEW_POLL_MAX_AGE_DAYS or 7; 0 reviews everything)")
-    ap.add_argument("--no-webhook", action="store_true", help="poll only: do not listen for webhooks")
+    ap.add_argument("--no-webhook", action="store_true", help="poll only: POST /webhook is not accepted")
+    ap.add_argument("--no-feedback", action="store_true", help="do not refresh feedback on posted reviews")
     ap.add_argument("--max-mirrors-gb", type=float, metavar="GB",
                     help="budget for all mirrors together (default: COMPAT_REVIEW_MAX_MIRRORS_GB or 50)")
     args = ap.parse_args(argv)
@@ -482,9 +575,14 @@ def main(argv=None):
         ap.error("--max-mirrors-gb must be positive")
     with DataLock(settings.data_dir):  # never while another process holds a tree extracted here
         stale = clear_tmp(settings)
+        imported = settings.database().import_json(settings.data_dir / "reviews", settings.price_in, settings.price_out)
     if stale:
         log.info("removed %s extraction director%s left by an earlier run", stale, "y" if stale == 1 else "ies")
+    if imported:
+        log.info("imported %s review%s from JSON files into the database", imported, "" if imported == 1 else "s")
     log.info("mirrors use %.1f GB of a %g GB budget", mirrors_size_gb(settings), settings.max_mirror_bytes / 1024**3)
+    if settings.price_in is None or settings.price_out is None:
+        log.info("no token prices configured (COMPAT_REVIEW_PRICE_IN_PER_M / _OUT_PER_M): costs will show as n/a")
     try:
         repos = parse_repos(args.poll or [os.environ.get("COMPAT_REVIEW_POLL_REPOS", "")])
     except ValueError as e:
@@ -511,23 +609,17 @@ def main(argv=None):
     worker = Worker(settings)
     worker.start()
     log.info("posting %s, data in %s", "on" if settings.post else "off", settings.data_dir)
-    poller = None
     if repos:
-        poller = Poller(settings, worker, repos, args.interval, max_age_days=args.max_age)
-        poller.start()
+        Poller(settings, worker, repos, args.interval, max_age_days=args.max_age).start()
         log.info("polling %s every %ss, pull requests updated within %g days", ", ".join(f"{o}/{r}" for o, r in repos),
                  args.interval, args.max_age)
-    if args.no_webhook:
-        try:
-            poller.join()
-        except KeyboardInterrupt:
-            pass
-        return 0
-
-    if not settings.webhook_secret:
+    if not args.no_feedback:
+        FeedbackPoller(settings, settings.feedback_interval).start()
+    if not args.no_webhook and not settings.webhook_secret:
         log.warning("GITHUB_WEBHOOK_SECRET is not set: signatures are not checked")
-    server = ThreadingHTTPServer(("", args.port), make_handler(settings, worker))
-    log.info("listening on :%s for webhooks", args.port)
+    server = ThreadingHTTPServer(("", args.port), make_handler(settings, worker, webhook=not args.no_webhook))
+    log.info("dashboard at http://localhost:%s/%s%s", args.port, "?token=..." if settings.dashboard_token else "",
+             "" if args.no_webhook else ", webhooks at /webhook")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

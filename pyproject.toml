@@ -18,9 +18,10 @@ service = ["PyJWT[crypto]>=2.8"]
 [project.scripts]
 compatibility-review = "compat_review.cli:main"
 compatibility-review-service = "compat_review.service:main"
+compatibility-review-report = "compat_review.report:main"
 
 [tool.setuptools]
 packages = ["compat_review"]
 
 [tool.setuptools.package-data]
-compat_review = ["*.md", "*.json"]
+compat_review = ["*.md", "*.json", "*.html"]

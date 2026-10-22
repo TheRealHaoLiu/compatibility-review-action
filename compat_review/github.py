@@ -17,7 +17,9 @@ def app_jwt(app_id, private_key_pem):
 
 
 class GitHubError(RuntimeError):
-    pass
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status
 
 
 class GitHub:
@@ -62,17 +64,35 @@ class GitHub:
         """An installation token older than 50 minutes (they last an hour); a personal token never."""
         return self.minted_at is not None and time.time() - self.minted_at > 50 * 60
 
+    def _headers(self):
+        return {"Authorization": f"Bearer {self.token}", "Accept": "application/vnd.github+json",
+                "Content-Type": "application/json", "X-GitHub-Api-Version": "2022-11-28"}
+
     def request(self, method, path, body=None):
         data = json.dumps(body).encode() if body is not None else None
-        req = urllib.request.Request(self.api + path, method=method, data=data, headers={
-            "Authorization": f"Bearer {self.token}", "Accept": "application/vnd.github+json",
-            "Content-Type": "application/json", "X-GitHub-Api-Version": "2022-11-28"})
+        req = urllib.request.Request(self.api + path, method=method, data=data, headers=self._headers())
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
                 text = r.read().decode()
                 return json.loads(text) if text else {}
         except urllib.error.HTTPError as e:
-            raise GitHubError(f"{method} {path}: {e.code} {e.read().decode()[:300]}") from None
+            raise GitHubError(f"{method} {path}: {e.code} {e.read().decode()[:300]}", status=e.code) from None
+
+    def get_if_changed(self, path, etag=None):
+        """(data, etag) for a GET; (None, etag) when the resource is unchanged since `etag`. GitHub
+        answers that with 304 and does not count it against the rate limit."""
+        headers = self._headers()
+        if etag:
+            headers["If-None-Match"] = etag
+        req = urllib.request.Request(self.api + path, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                text = r.read().decode()
+                return (json.loads(text) if text else {}), r.headers.get("ETag")
+        except urllib.error.HTTPError as e:
+            if e.code == 304:
+                return None, etag
+            raise GitHubError(f"GET {path}: {e.code} {e.read().decode()[:300]}", status=e.code) from None
 
     def git_auth_header(self):
         """`http.extraheader` value so git can fetch a private repository with this token."""

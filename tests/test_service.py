@@ -139,8 +139,10 @@ class ServiceTest(unittest.TestCase):
             again = service.handle(job, loud, gh, lambda *a: self.fail("model called"), mirror=work)
             self.assertEqual(again["_meta"]["comment_id"], 1)
             self.assertIn("🔴 Red", gh.body)
-            stored = json.loads(next((Path(tmp) / "data" / "reviews" / "o-r").glob("1-*.json")).read_text())
-            self.assertEqual(stored["_meta"]["comment_id"], 1)
+            stored = loud.database().find_review("o", "r", 1, again["_meta"]["diff_sha256"])
+            self.assertEqual(stored["comment_id"], 1)
+            self.assertIsNotNone(stored["posted_at"])
+            self.assertEqual(stored["title"], "Deny link-local")
             self.assertIsNone(service.handle(job, loud, gh, lambda *a: self.fail("model called"), mirror=work))
             self.assertEqual(len(gh.comments), 1)
 
@@ -255,14 +257,18 @@ class ServiceTest(unittest.TestCase):
             return {"number": number, "head": {"sha": sha}, "base": {"ref": "main"}, "title": f"PR {number}",
                     "body": None, "draft": draft}
 
+        def stored(number, head, comment_id=None):
+            meta = {"owner": "o", "repo": "r", "number": number, "head": head, "diff_sha256": head * 20,
+                    "prompt": "v9", "rule": "v9", "model": "m", "usage": {}}
+            if comment_id:
+                meta.update({"comment_id": comment_id, "posted_at": "2026-10-22T10:00:00+00:00"})
+            return {"verdict": "none", "color": "Green", "_meta": meta}
+
         with tempfile.TemporaryDirectory() as tmp:
             data = Path(tmp) / "data"
-            reviews = data / "reviews" / "o-r"
-            reviews.mkdir(parents=True)
-            (reviews / "3-aaaaaaaaaaaa.json").write_text(json.dumps(
-                {"verdict": "none", "_meta": {"number": 3, "head": "ccc", "comment_id": 9}}))
-            (reviews / "4-bbbbbbbbbbbb.json").write_text(json.dumps(
-                {"verdict": "none", "_meta": {"number": 4, "head": "ddd"}}))  # stored while posting was off
+            settings = service.Settings(data_dir=data, model="m", post=True)
+            settings.database().insert_review(stored(3, "ccc", comment_id=9))
+            settings.database().insert_review(stored(4, "ddd"))  # stored while posting was off
             gh = FakeGitHub()
             gh.pulls = [pr(1, "aaa"), pr(2, "bbb", draft=True), pr(3, "ccc"), pr(4, "ddd")]
 
@@ -270,7 +276,6 @@ class ServiceTest(unittest.TestCase):
                 pass
 
             StubWorker.queue = queue.Queue()
-            settings = service.Settings(data_dir=data, model="m", post=True)
             poller = service.Poller(settings, StubWorker, [("o", "r")], 60, client=lambda s, o, r: (gh, 42))
             queued = poller.scan()
             self.assertEqual([j.number for j in queued], [1, 4])  # 2 is a draft, 3 was reviewed and posted
@@ -294,6 +299,57 @@ class ServiceTest(unittest.TestCase):
         poller = service.Poller(settings, StubWorker, [("o", "r")], 60, client=broken)
         with self.assertLogs("compatibility-review", level="ERROR"):
             self.assertEqual(poller.scan(), [])
+
+    def test_dashboard_and_exports(self):
+        import threading
+        import urllib.error
+        import urllib.request
+        from http.server import ThreadingHTTPServer
+
+        class StubWorker:
+            pass
+
+        StubWorker.queue = queue.Queue()
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = service.Settings(data_dir=Path(tmp), model="m", dashboard_token="t0k")
+            meta = {"owner": "o", "repo": "r", "number": 4, "head": "h" * 40, "diff_sha256": "d" * 64, "prompt": "v9",
+                    "rule": "v9", "model": "m", "usage": {"in": 100, "out": 10}, "latency_s": 3.0}
+            settings.database().insert_review({"verdict": "notable", "color": "Yellow", "summary": "s", "_meta": meta},
+                                              title="A change")
+            server = ThreadingHTTPServer(("127.0.0.1", 0), service.make_handler(settings, StubWorker, webhook=False))
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            base = f"http://127.0.0.1:{server.server_port}"
+            try:
+                with self.assertRaises(urllib.error.HTTPError) as ctx:
+                    urllib.request.urlopen(base + "/")
+                self.assertEqual(ctx.exception.code, 401)
+                with urllib.request.urlopen(base + "/?token=t0k") as r:
+                    self.assertIn("<title>Compatibility review</title>", r.read().decode())
+                req = urllib.request.Request(base + "/api/summary?since=7", headers={"Authorization": "Bearer t0k"})
+                with urllib.request.urlopen(req) as r:
+                    summary = json.loads(r.read())
+                self.assertEqual((summary["reviews"], summary["verdicts"]["notable"], summary["repos"]), (1, 1, ["o/r"]))
+                with urllib.request.urlopen(base + "/api/reviews?token=t0k&limit=5") as r:
+                    rows = json.loads(r.read())
+                self.assertEqual((rows[0]["repo"], rows[0]["url"], rows[0]["title"]), ("o/r", "https://github.com/o/r/pull/4", "A change"))
+                with urllib.request.urlopen(base + "/export.csv?token=t0k") as r:
+                    self.assertTrue(r.headers["Content-Type"].startswith("text/csv"))
+                    self.assertEqual(len(r.read().decode().splitlines()), 2)
+                with urllib.request.urlopen(base + "/export.json?token=t0k&repo=o/r") as r:
+                    self.assertEqual(len(json.loads(r.read())), 1)
+                with urllib.request.urlopen(base + "/report.md?token=t0k&since=30") as r:
+                    text = r.read().decode()
+                self.assertIn("# Compatibility review", text)
+                self.assertIn("last 30 days", text)
+                with urllib.request.urlopen(base + "/healthz") as r:
+                    self.assertEqual(r.status, 200)  # never needs the token
+                hook = urllib.request.Request(base + "/webhook", data=b"{}", headers={"X-GitHub-Event": "ping"})
+                with self.assertRaises(urllib.error.HTTPError) as ctx:
+                    urllib.request.urlopen(hook)
+                self.assertEqual(ctx.exception.code, 404)  # webhooks disabled
+            finally:
+                server.shutdown()
+                server.server_close()
 
     def test_webhook_endpoint(self):
         import threading

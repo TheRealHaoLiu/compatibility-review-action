@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Compatibility review</title>
+<style>
+  :root { --bg: #f6f7f9; --card: #fff; --ink: #1c2128; --muted: #656d76; --line: #d8dde3; --red: #d1242f; --yellow: #bf8700; --green: #1a7f37; --accent: #0969da; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0d1117; --card: #161b22; --ink: #e6edf3; --muted: #8b949e; --line: #30363d; --red: #f85149; --yellow: #d29922; --green: #3fb950; --accent: #58a6ff; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; padding: 16px; border-bottom: 1px solid var(--line); background: var(--card); position: sticky; top: 0; }
+  header h1 { font-size: 18px; margin: 0 auto 0 0; }
+  select, a.btn { font: inherit; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--ink); text-decoration: none; }
+  a.btn:hover { border-color: var(--accent); color: var(--accent); }
+  main { padding: 16px; max-width: 1200px; margin: 0 auto; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+  .card .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .card .v { font-size: 26px; font-weight: 600; margin-top: 2px; }
+  .card .s { color: var(--muted); font-size: 13px; }
+  h2 { font-size: 15px; margin: 22px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  th, td { text-align: left; padding: 7px 10px; border-top: 1px solid var(--line); font-size: 14px; vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; border-top: 0; }
+  td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+  .bar { display: flex; height: 14px; border-radius: 7px; overflow: hidden; background: var(--line); margin: 6px 0 4px; }
+  .bar span { display: block; height: 100%; }
+  .red { background: var(--red); } .yellow { background: var(--yellow); } .green { background: var(--green); }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; color: #fff; }
+  .muted { color: var(--muted); }
+  .needs li { margin: 6px 0; }
+  a { color: var(--accent); }
+  footer { color: var(--muted); font-size: 12px; padding: 20px 16px; text-align: center; }
+  .wrap { overflow-x: auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Compatibility review</h1>
+  <label>Window <select id="since"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option><option value="all">all time</option></select></label>
+  <label>Repository <select id="repo"><option value="">all</option></select></label>
+  <a class="btn" id="csv" href="#">CSV</a>
+  <a class="btn" id="json" href="#">JSON</a>
+  <a class="btn" id="md" href="#">Report</a>
+</header>
+<main>
+  <div class="cards" id="cards"></div>
+  <h2>Verdicts</h2>
+  <div class="card" id="verdicts"></div>
+  <h2>By repository</h2>
+  <div class="wrap"><table id="repos"></table></div>
+  <h2>By version</h2>
+  <div class="wrap"><table id="versions"></table></div>
+  <h2>Feedback</h2>
+  <div class="cards" id="feedback"></div>
+  <div class="wrap"><table id="colors"></table></div>
+  <h2>Needs a look</h2>
+  <div class="card needs" id="needs"></div>
+  <h2>Recent reviews</h2>
+  <div class="wrap"><table id="recent"></table></div>
+</main>
+<footer id="foot"></footer>
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const token = new URLSearchParams(location.search).get("token");
+  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+  const money = (x) => x == null ? "n/a" : (x < 1 ? "$" + x.toFixed(4) : "$" + x.toFixed(2));
+  const num = (x) => (x == null ? 0 : x).toLocaleString();
+  const secs = (x) => x == null ? "n/a" : x.toFixed(1) + " s";
+  const colorClass = { breaking: "red", notable: "yellow", none: "green" };
+  const badge = (verdict, color) => `<span class="pill ${colorClass[verdict] || ""}">${esc(color || verdict || "?")}</span>`;
+
+  function params(extra) {
+    const p = new URLSearchParams(extra || {});
+    const since = $("since").value, repo = $("repo").value;
+    if (since !== "all") p.set("since", since);
+    if (repo) p.set("repo", repo);
+    if (token) p.set("token", token);
+    return p.toString();
+  }
+  async function get(path, extra) {
+    const r = await fetch(path + "?" + params(extra), { cache: "no-store" });
+    if (!r.ok) throw new Error(path + ": " + r.status);
+    return r.json();
+  }
+  function cells(cols) { return cols.map((c) => `<td class="${typeof c === "number" ? "n" : ""}">${typeof c === "number" ? num(c) : c}</td>`).join(""); }
+
+  function render(s, recent) {
+    $("cards").innerHTML = [
+      ["Reviews", s.reviews, `${s.modeled} by the model, ${s.skipped} skipped`],
+      ["Cost", money(s.cost_usd), s.cost_known ? `${s.cost_known} priced reviews` : "no prices configured"],
+      ["Tokens", num(s.tokens_in) + " in", num(s.tokens_out) + " out"],
+      ["Latency", secs(s.latency_median_s), "median · p95 " + secs(s.latency_p95_s)],
+      ["Repositories", s.repos.length, ""],
+    ].map(([k, v, sub]) => `<div class="card"><div class="k">${k}</div><div class="v">${esc(v)}</div><div class="s">${esc(sub)}</div></div>`).join("");
+
+    const v = s.verdicts, total = Math.max(1, v.breaking + v.notable + v.none);
+    $("verdicts").innerHTML = `<div class="bar"><span class="red" style="width:${100 * v.breaking / total}%"></span><span class="yellow" style="width:${100 * v.notable / total}%"></span><span class="green" style="width:${100 * v.none / total}%"></span></div>
+      🔴 Red ${v.breaking} (${(100 * v.breaking / total).toFixed(0)}%) · 🟡 Yellow ${v.notable} (${(100 * v.notable / total).toFixed(0)}%) · 🟢 Green ${v.none} (${(100 * v.none / total).toFixed(0)}%)`;
+
+    $("repos").innerHTML = `<tr><th>repository</th><th class="n">reviews</th><th class="n">🔴</th><th class="n">🟡</th><th class="n">🟢</th><th class="n">tokens in</th><th class="n">tokens out</th><th class="n">cost</th><th class="n">posted</th><th class="n">👍</th><th class="n">👎</th></tr>` +
+      s.by_repo.map((r) => `<tr>${cells([esc(r.repo), r.reviews || 0, r.breaking || 0, r.notable || 0, r.none || 0, r.tokens_in || 0, r.tokens_out || 0, money(r.cost_usd), r.posted || 0, r.thumbs_up || 0, r.thumbs_down || 0])}</tr>`).join("");
+
+    $("versions").innerHTML = `<tr><th>version</th><th class="n">reviews</th><th class="n">🔴</th><th class="n">🟡</th><th class="n">🟢</th><th class="n">cost</th><th class="n">median latency</th></tr>` +
+      s.by_version.map((r) => `<tr>${cells([esc(r.version), r.reviews || 0, r.breaking || 0, r.notable || 0, r.none || 0, money(r.cost_usd), secs(r.latency_median_s)])}</tr>`).join("");
+
+    const f = s.feedback;
+    $("feedback").innerHTML = [
+      ["Posted", f.posted, `${f.fetched} with feedback fetched`],
+      ["👍", f.thumbs_up, ""], ["👎", f.thumbs_down, ""],
+      ["Reactions", `${f.with_reactions} of ${f.fetched}`, "reviews with any"],
+      ["Replies", f.replies, `on ${f.with_replies} reviews`],
+      ["Removed", f.comment_deleted + f.note_removed, `${f.comment_deleted} comments, ${f.note_removed} notes`],
+      ["Merged / closed / open", `${f.pr_merged} / ${f.pr_closed} / ${f.pr_open}`, `${f.red_merged} Red merged`],
+    ].map(([k, v, sub]) => `<div class="card"><div class="k">${k}</div><div class="v">${esc(v)}</div><div class="s">${esc(sub)}</div></div>`).join("");
+    const colors = ["breaking", "notable", "none"].filter((k) => f.by_color[k]);
+    $("colors").innerHTML = colors.length ? `<tr><th>verdict</th><th class="n">reviews</th><th class="n">👍</th><th class="n">👎</th></tr>` +
+      colors.map((k) => `<tr>${cells([badge(k, {breaking: "Red", notable: "Yellow", none: "Green"}[k]), f.by_color[k].reviews, f.by_color[k].up, f.by_color[k].down])}</tr>`).join("") : "";
+
+    $("needs").innerHTML = s.needs_look.length ? "<ul>" + s.needs_look.map((g) => {
+      const why = [];
+      if (g.thumbs_down) why.push("👎 " + esc(g.reactors));
+      if (g.comment_deleted) why.push("comment deleted");
+      if (g.reply_count) why.push(`${g.reply_count} repl${g.reply_count === 1 ? "y" : "ies"}: “${esc((g.first_reply || "").slice(0, 160))}”`);
+      return `<li><a href="${esc(g.url)}">${esc(g.repo)}#${g.number}</a> ${badge(g.verdict, g.color)} ${why.join("; ")}</li>`;
+    }).join("") + "</ul>" : `<span class="muted">Nothing yet: no 👎, replies, or deleted comments.</span>`;
+
+    $("recent").innerHTML = `<tr><th>when</th><th>pull request</th><th>verdict</th><th>mechanism</th><th class="n">tokens</th><th class="n">cost</th><th class="n">latency</th><th>feedback</th></tr>` +
+      recent.map((g) => {
+        const fb = g.comment_id ? [g.thumbs_up ? "👍" + g.thumbs_up : "", g.thumbs_down ? "👎" + g.thumbs_down : "", g.reply_count ? "💬" + g.reply_count : "", g.merged ? "merged" : (g.pr_state || "")].filter(Boolean).join(" ") : '<span class="muted">not posted</span>';
+        return `<tr><td class="muted">${esc((g.reviewed_at || "").replace("T", " ").slice(0, 16))}</td><td><a href="${esc(g.url)}">${esc(g.repo)}#${g.number}</a> ${esc((g.title || "").slice(0, 80))}</td><td>${badge(g.verdict, g.color)}</td><td>${esc(g.mechanism || "")}</td><td class="n">${num(g.tokens_in)} / ${num(g.tokens_out)}</td><td class="n">${money(g.cost_usd)}</td><td class="n">${secs(g.latency_s)}</td><td>${fb}</td></tr>`;
+      }).join("");
+    $("foot").textContent = "updated " + new Date().toLocaleTimeString() + " · refreshes every 30 s · generated " + s.generated_at;
+  }
+
+  async function load() {
+    try {
+      const [s, recent] = await Promise.all([get("/api/summary"), get("/api/reviews", { limit: 100 })]);
+      const repoSel = $("repo"), current = repoSel.value;
+      const options = ['<option value="">all</option>'].concat(s.repos.map((r) => `<option value="${esc(r)}">${esc(r)}</option>`));
+      if (repoSel.innerHTML !== options.join("")) { repoSel.innerHTML = options.join(""); repoSel.value = current; }
+      $("csv").href = "/export.csv?" + params(); $("json").href = "/export.json?" + params(); $("md").href = "/report.md?" + params();
+      render(s, recent);
+    } catch (e) {
+      $("foot").textContent = "could not load: " + e.message;
+    }
+  }
+  $("since").addEventListener("change", load);
+  $("repo").addEventListener("change", load);
+  load();
+  setInterval(load, 30000);
+})();
+</script>
+</body>
+</html>

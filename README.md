@@ -41,7 +41,7 @@ export GITHUB_TOKEN=$(gh auth token)           # or a fine-grained token: pull r
 compatibility-review-service --poll owner/repo --no-webhook --no-post
 ```
 
-Watch the log: the first scan queues every open, non-draft pull request updated in the last 7 days, the worker reviews them one at a time, and each result lands in `data/reviews/`. Older open pull requests are treated as abandoned and left alone until a push moves their head; `--max-age DAYS` (`COMPAT_REVIEW_POLL_MAX_AGE_DAYS`) changes the cutoff, and 0 reviews everything. Drop `--no-post` once a review looks right; results stored while posting was off are posted on the next scan without a new model call. `--poll` repeats or takes a comma-separated list (`COMPAT_REVIEW_POLL_REPOS` in the environment does the same, for a container), `--interval` sets the seconds between scans (`COMPAT_REVIEW_POLL_INTERVAL`, default 60). Polling costs one API request per hundred open pull requests per scan. A pull request that fails to review is not retried until its head moves or the service restarts.
+Watch the log, or open the dashboard at `http://localhost:8000/`: the first scan queues every open, non-draft pull request updated in the last 7 days, the worker reviews them one at a time, and each result lands in the database under `data/`. Older open pull requests are treated as abandoned and left alone until a push moves their head; `--max-age DAYS` (`COMPAT_REVIEW_POLL_MAX_AGE_DAYS`) changes the cutoff, and 0 reviews everything. Drop `--no-post` once a review looks right; results stored while posting was off are posted on the next scan without a new model call. `--poll` repeats or takes a comma-separated list (`COMPAT_REVIEW_POLL_REPOS` in the environment does the same, for a container), `--interval` sets the seconds between scans (`COMPAT_REVIEW_POLL_INTERVAL`, default 60). Polling costs one API request per hundred open pull requests per scan. A pull request that fails to review is not retried until its head moves or the service restarts.
 
 **One pull request by hand:** `compatibility-review-service --once owner/repo#123` reviews it now and prints the result.
 
@@ -67,12 +67,24 @@ Fetch the mirror and the PR head, diff from the merge base, repository facts fro
 
 A `Dockerfile` builds the service image; mount `/data` and pass the environment above. With `COMPAT_REVIEW_POLL_REPOS` set, the container polls; with the App variables set, it serves webhooks on port 8000; with both, it does both.
 
+### Dashboard, database and exports
+
+Every review goes into `compat-review.sqlite3` under the data directory: the verdict and the answers behind it, the prompt, rule and model versions, tokens, cost, latency, the commits reviewed, when it was posted and as which comment, and the full result. A background thread then keeps the feedback on each posted review current: 👍 and 👎 on the bot's comment and who gave them, human replies after it with an excerpt, whether the comment or the note in the description was deleted, and whether the pull request merged or closed. It refreshes every 30 minutes for a week after posting, every six hours for two months, then weekly, with conditional requests that GitHub does not count against the rate limit when nothing changed. `--no-feedback` turns it off; `COMPAT_REVIEW_FEEDBACK_INTERVAL` sets the first cadence.
+
+The service serves a live dashboard at `/`: a time window and a repository filter, spend (reviews, tokens, cost, latency), the verdict mix, per-repository and per-version tables, the feedback tallies by verdict, a "needs a look" list of reviews with a 👎, a reply, or a deleted comment, and the recent reviews with links to their pull requests. It refreshes itself every 30 seconds. The same data exports with the dashboard's current filters from `/export.csv` (one row per review, the grade sheet), `/export.json`, and `/report.md` (the summary as Markdown), or from the command line:
+
+```sh
+compatibility-review-report --data ./data --since 30 --repo owner/repo --format csv --out reviews.csv
+```
+
+Costs need the model's prices in dollars per million tokens, `COMPAT_REVIEW_PRICE_IN_PER_M` and `COMPAT_REVIEW_PRICE_OUT_PER_M`; without them the dashboard shows n/a. Set `COMPAT_REVIEW_DASHBOARD_TOKEN` and the dashboard and exports require `?token=...` or an `Authorization: Bearer` header; `/healthz` never does. If the service's port is reachable from the internet for webhooks, set the token or keep the dashboard behind your proxy, because it names the pull requests it reviewed.
+
 ### Storage
 
 The data directory holds three things, and none of them needs watching:
 
 - `mirrors/`: one bare clone per repository, branches and tags only, so the cost is the repository's history once, whatever the number of branches reviewed against. Branches deleted upstream are pruned on every fetch. A pull request's ref is dropped as soon as its review is stored, so the objects it alone kept alive are reclaimed by git's own garbage collection. All mirrors together are kept under a budget, `COMPAT_REVIEW_MAX_MIRRORS_GB` or `--max-mirrors-gb` (default 50): past it, the least recently used mirrors are deleted and cloned again on their next review. The service logs the usage against the budget at startup and whenever it evicts.
-- `reviews/`: one small JSON file per reviewed diff, a few kilobytes each. These are the record the feedback is graded against and are kept.
+- `compat-review.sqlite3`: every review and the feedback on it, a few kilobytes per review. This is the record the feedback is graded against and is kept. Result files under `reviews/` from earlier versions are imported into it at startup.
 - `tmp/`: the tree a review extracts for the repository facts, removed when the review ends. Anything a hard kill leaves here is removed at the next start.
 
 One review at a time per data directory, across processes: a lock file in it is held for each review and for the startup cleanup. A `--once` run alongside the running service waits for the current review and then goes, and two services pointed at one data directory take turns rather than racing each other's trees and mirrors.
@@ -123,7 +135,11 @@ Without the file, the generic product paragraph in `compat_review/context.md` is
 | `compat_review/change.py` | Diff from the merge base, tree extraction, the assembled input |
 | `compat_review/review.py` | The model call (Responses, Chat Completions, or Anthropic Messages) |
 | `compat_review/cli.py` | `compatibility-review`: one change in a checkout |
-| `compat_review/service.py` | `compatibility-review-service`: the poller, the webhook server, and the worker |
+| `compat_review/service.py` | `compatibility-review-service`: the poller, the webhook server, the worker, the feedback thread, the dashboard routes |
+| `compat_review/db.py` | The SQLite record of reviews and feedback |
+| `compat_review/feedback.py` | Reactions, replies, and the pull request's fate, fetched with conditional requests |
+| `compat_review/report.py` | `compatibility-review-report`: the summary and the grade sheet, also behind the dashboard's exports |
+| `compat_review/dashboard.html` | The dashboard page, no external assets |
 | `compat_review/github.py` | GitHub App tokens and the REST calls used |
 | `compat_review/post.py` | The note and the gradable comment |
 | `compat_review/mirror.py` | Bare mirrors of reviewed repositories |
