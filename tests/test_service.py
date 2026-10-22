@@ -182,6 +182,20 @@ class ServiceTest(unittest.TestCase):
             refs = subprocess.run(["git", "-C", str(work), "for-each-ref", "refs/pull/1"], capture_output=True, text=True)
             self.assertEqual(refs.stdout, "")
 
+    def test_data_lock_is_exclusive_across_handles(self):
+        import fcntl
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with service.DataLock(tmp):
+                other = open(Path(tmp) / ".lock", "a+")
+                try:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally:
+                    other.close()
+            with service.DataLock(tmp):  # released: can be taken again
+                pass
+
     def test_clear_tmp_removes_only_extraction_directories(self):
         with tempfile.TemporaryDirectory() as tmp:
             settings = service.Settings(data_dir=Path(tmp), model="m")

@@ -75,6 +75,8 @@ The data directory holds three things, and none of them needs watching:
 - `reviews/`: one small JSON file per reviewed diff, a few kilobytes each. These are the record the feedback is graded against and are kept.
 - `tmp/`: the tree a review extracts for the repository facts, removed when the review ends. Anything a hard kill leaves here is removed at the next start.
 
+One review at a time per data directory, across processes: a lock file in it is held for each review and for the startup cleanup. A `--once` run alongside the running service waits for the current review and then goes, and two services pointed at one data directory take turns rather than racing each other's trees and mirrors.
+
 ### What it posts
 
 In the PR description, between `<!-- compatibility-review:begin -->` and `<!-- compatibility-review:end -->`: the verdict, the summary, the setup that stops working and how, and the version and commit reviewed. The section is replaced on each review, so the description holds one note.

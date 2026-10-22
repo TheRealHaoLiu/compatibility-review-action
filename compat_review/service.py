@@ -37,6 +37,11 @@ import tempfile
 import threading
 import tomllib
 from dataclasses import dataclass
+
+try:
+    import fcntl
+except ImportError:  # Windows: no cross-process lock; one process per data directory is on the operator
+    fcntl = None
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -151,6 +156,37 @@ def reviews_dir(settings, owner, repo):
     return d
 
 
+class DataLock:
+    """One review at a time per data directory, across processes.
+
+    The worker, a `--once` run, and the startup cleanup all take it, so a review by hand alongside
+    the running service waits for the current review instead of racing its extracted tree or
+    evicting its mirror, and two services on one data directory take turns.
+    """
+
+    def __init__(self, data_dir):
+        self.path = Path(data_dir) / ".lock"
+        self.f = None
+
+    def __enter__(self):
+        if fcntl is None:
+            return self
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.f = open(self.path, "a+")  # noqa: SIM115 - closed in __exit__
+        try:
+            fcntl.flock(self.f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            log.info("waiting for another review on %s", self.path.parent)
+            fcntl.flock(self.f, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        if self.f is not None:
+            fcntl.flock(self.f, fcntl.LOCK_UN)
+            self.f.close()
+            self.f = None
+
+
 def tmp_dir(settings):
     """Where trees are extracted: under the data directory, so a hard kill leaks nothing elsewhere."""
     d = settings.data_dir / "tmp"
@@ -208,8 +244,9 @@ def handle(job, settings, gh=None, reviewer=review.review, mirror=None):
     """Review one pull request end to end. Returns the result, or None when nothing was reviewed.
 
     With `mirror` given (tests), the PR head is expected at refs/pull/<n>/head and left in place.
-    Otherwise the service fetches it into the repository's mirror, and whatever happens next, drops
-    the ref afterwards and brings the mirrors back under budget.
+    Otherwise, under the data directory's lock, the service fetches it into the repository's
+    mirror, and whatever happens next, drops the ref afterwards and brings the mirrors back under
+    budget.
     """
     if job.draft and settings.skip_drafts:
         log.info("%s/%s#%s: draft, skipped", job.owner, job.repo, job.number)
@@ -217,20 +254,21 @@ def handle(job, settings, gh=None, reviewer=review.review, mirror=None):
     gh = gh or client(settings, job)
     if mirror is not None:
         return _review(job, settings, gh, reviewer, mirror)
-    auth = gh.git_auth_header()
-    mirror = mirrors.ensure(settings.data_dir, job.owner, job.repo, auth)
-    mirrors.fetch_pull(mirror, job.number, auth)
-    try:
-        return _review(job, settings, gh, reviewer, mirror)
-    finally:
+    with DataLock(settings.data_dir):
+        auth = gh.git_auth_header()
+        mirror = mirrors.ensure(settings.data_dir, job.owner, job.repo, auth)
+        mirrors.fetch_pull(mirror, job.number, auth)
         try:
-            mirrors.release_pull(mirror, job.number)
-            deleted, total = mirrors.enforce_budget(settings.data_dir, settings.max_mirror_bytes, keep=mirror)
-            if deleted:
-                log.warning("mirrors over budget: deleted %s, %.1f GB remain",
-                            ", ".join(p.name for p in deleted), total / 1024**3)
-        except Exception:  # noqa: BLE001 - housekeeping must not mask the review's outcome
-            log.exception("%s/%s#%s: housekeeping failed", job.owner, job.repo, job.number)
+            return _review(job, settings, gh, reviewer, mirror)
+        finally:
+            try:
+                mirrors.release_pull(mirror, job.number)
+                deleted, total = mirrors.enforce_budget(settings.data_dir, settings.max_mirror_bytes, keep=mirror)
+                if deleted:
+                    log.warning("mirrors over budget: deleted %s, %.1f GB remain",
+                                ", ".join(p.name for p in deleted), total / 1024**3)
+            except Exception:  # noqa: BLE001 - housekeeping must not mask the review's outcome
+                log.exception("%s/%s#%s: housekeeping failed", job.owner, job.repo, job.number)
 
 
 def _review(job, settings, gh, reviewer, mirror):
@@ -413,7 +451,8 @@ def main(argv=None):
         ap.error("COMPAT_REVIEW_MODEL is required")
     if settings.max_mirror_bytes <= 0:
         ap.error("--max-mirrors-gb must be positive")
-    stale = clear_tmp(settings)
+    with DataLock(settings.data_dir):  # never while another process holds a tree extracted here
+        stale = clear_tmp(settings)
     if stale:
         log.info("removed %s extraction director%s left by an earlier run", stale, "y" if stale == 1 else "ies")
     log.info("mirrors use %.1f GB of a %g GB budget", mirrors_size_gb(settings), settings.max_mirror_bytes / 1024**3)
