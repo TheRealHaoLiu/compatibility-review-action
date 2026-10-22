@@ -244,6 +244,23 @@ class ServiceTest(unittest.TestCase):
             again = service.handle(service.Job("o", "r", 1, "main", "t", ""), fresh4, FakeGitHub(), fake_reviewer, mirror=work)
             self.assertEqual(again["verdict"], "breaking")
 
+    def test_recovered_review_renders_the_same_note_again(self):
+        result = fake_reviewer("## Repository facts\n#### app/allow.py: load", "A product.", "m", "responses", None, "medium")
+        result["_meta"].update({"head": "h" * 40, "base": "b" * 40, "diff_sha256": "ab" * 32, "posted_at": "2026-10-20T00:00:00+00:00"})
+        body = post.splice("The author's description.", post.note(result))
+        rec = post.parse_note_record(body)
+        from compat_review.db import recovered_result
+        again = recovered_result("o", "r", 7, rec, posted_text=post.posted_lines(body))
+        self.assertEqual(post.note(again), post.note(result))
+        self.assertEqual(post.splice(body, post.note(again)), body)
+        # and from the comment's text
+        from_comment = recovered_result("o", "r", 7, post.parse_record(post.comment(result)),
+                                        posted_text=post.posted_lines(post.comment(result)))
+        self.assertEqual(post.note(from_comment), post.note(result))
+        # a note in the old, uncalled-out format reads back the same prose
+        old = post.note(result).replace("---\n", "").replace("> [!CAUTION]\n", "").replace("\n> ", "\n").replace("\n>", "\n")
+        self.assertEqual(post.posted_lines(old), post.posted_lines(body))
+
     def test_poller_trusts_the_note_in_the_description(self):
         result = fake_reviewer("## Repository facts\n#### app/allow.py: load", "A product.", "m", "responses", None, "medium")
         result["_meta"].update({"head": "eee", "base": "b" * 40, "diff_sha256": "cd" * 32, "posted_at": "2026-10-20T00:00:00+00:00"})

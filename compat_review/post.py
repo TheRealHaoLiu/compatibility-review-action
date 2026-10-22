@@ -51,7 +51,34 @@ def parse_note_record(body):
         return None
 
 
+def _unquote(lines):
+    return [line[2:] if line.startswith("> ") else "" if line == ">" else line for line in lines]
+
+
+def _strip_blank(lines):
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return lines
+
+
+def posted_lines(body):
+    """The visible lines of a posted note or comment, without markers, rule, callout prefixes, version
+    lines or the footer: what a review recovered from GitHub keeps so it can be rendered again."""
+    m = re.search(re.escape(BEGIN) + r"[^\n]*\n(.*?)\n?" + re.escape(END), body or "", re.S)
+    text = m.group(1) if m else (body or "").split("\n`version:")[0]
+    lines = []
+    for line in _unquote(text.split("\n")):
+        if line == "---" or line.startswith("[!") or line.startswith("<sub>") or line.startswith(MARK):
+            continue
+        lines.append(line)
+    return _strip_blank(lines)
+
+
 def _lines(result):
+    if result.get("posted_text"):  # recovered from GitHub: the prose as it was posted
+        return list(result["posted_text"])
     out = [f"**Upgrade compatibility: {BADGE[result['verdict']]}**", ""]
     if result.get("summary"):
         out += [result["summary"].strip(), ""]

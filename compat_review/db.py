@@ -97,11 +97,13 @@ def review_fields(result, title=None, base_ref=None, price_in=None, price_out=No
 COLORS = {"breaking": "Red", "notable": "Yellow", "none": "Green"}
 
 
-def recovered_result(owner, repo, number, rec, comment_id=None, posted_at=None):
-    """A result rebuilt from a record the bot left on GitHub: enough for the cache and the metrics."""
+def recovered_result(owner, repo, number, rec, comment_id=None, posted_at=None, posted_text=None):
+    """A result rebuilt from a record the bot left on GitHub: enough for the cache and the metrics,
+    plus the posted prose when given, so the note can be rendered again without loss."""
     verdict = rec.get("verdict") or "none"
     return {"verdict": verdict, "color": COLORS.get(verdict), "findings": [],
             "q_mechanism": rec.get("mechanism"), "q_prevalence": rec.get("prevalence"),
+            "posted_text": list(posted_text) if posted_text else None,
             "_meta": {"owner": owner, "repo": repo, "number": number, "head": rec.get("head"), "base": rec.get("base"),
                       "diff_sha256": rec["diff_sha256"], "prompt": rec.get("version"), "rule": rec.get("rule"),
                       "model": rec.get("model"), "usage": rec.get("usage") or {}, "latency_s": rec.get("latency_s"),
@@ -159,9 +161,9 @@ class DB:
         return self.find_review(f["owner"], f["repo"], f["number"], f["diff_sha256"])["id"]
 
     def insert_recovered(self, owner, repo, number, rec, comment_id=None, posted_at=None, title=None,
-                         price_in=None, price_out=None):
+                         price_in=None, price_out=None, posted_text=None):
         """Store a review known only from a record the bot left on GitHub. Returns the row id."""
-        result = recovered_result(owner, repo, number, rec, comment_id, posted_at)
+        result = recovered_result(owner, repo, number, rec, comment_id, posted_at, posted_text)
         return self.insert_review(result, title=title, reviewed_at=result["_meta"]["posted_at"],
                                   price_in=price_in, price_out=price_out)
 

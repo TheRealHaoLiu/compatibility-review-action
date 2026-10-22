@@ -244,7 +244,7 @@ def recover(db, gh, job, diff_sha, settings):
     This is what keeps a diff from being reviewed twice when the database is gone."""
     rec = post.parse_note_record(job.body)
     if rec and rec.get("diff_sha256") == diff_sha:
-        db.insert_recovered(job.owner, job.repo, job.number, rec, title=job.title,
+        db.insert_recovered(job.owner, job.repo, job.number, rec, title=job.title, posted_text=post.posted_lines(job.body),
                             price_in=settings.price_in, price_out=settings.price_out)
         log.info("%s/%s#%s: diff %s recovered from the note in the description", job.owner, job.repo, job.number, diff_sha[:12])
         return db.find_review(job.owner, job.repo, job.number, diff_sha)
@@ -258,7 +258,8 @@ def recover(db, gh, job, diff_sha, settings):
         rec = post.parse_record(c.get("body"))
         if rec and rec.get("diff_sha256") == diff_sha:
             db.insert_recovered(job.owner, job.repo, job.number, rec, comment_id=c.get("id"), posted_at=c.get("created_at"),
-                                title=job.title, price_in=settings.price_in, price_out=settings.price_out)
+                                title=job.title, posted_text=post.posted_lines(c.get("body")),
+                                price_in=settings.price_in, price_out=settings.price_out)
             log.info("%s/%s#%s: diff %s recovered from the bot's comment", job.owner, job.repo, job.number, diff_sha[:12])
             return db.find_review(job.owner, job.repo, job.number, diff_sha)
     return None
@@ -417,6 +418,7 @@ class Poller(threading.Thread):
                     # the note in the description says this head was reviewed: nothing to fetch or call
                     if not db.find_review(owner, repo, pr["number"], rec["diff_sha256"]):
                         db.insert_recovered(owner, repo, pr["number"], rec, title=pr.get("title"),
+                                            posted_text=post.posted_lines(pr.get("body")),
                                             price_in=self.settings.price_in, price_out=self.settings.price_out)
                         recovered.append(pr["number"])
                     continue
@@ -509,6 +511,7 @@ def rebuild_from_notes(settings, owner, repo, days, client=client_for_repo):
             rec = post.parse_note_record(pr.get("body"))
             if rec and rec.get("diff_sha256") and not db.find_review(owner, repo, pr["number"], rec["diff_sha256"]):
                 db.insert_recovered(owner, repo, pr["number"], rec, title=pr.get("title"),
+                                    posted_text=post.posted_lines(pr.get("body")),
                                     price_in=settings.price_in, price_out=settings.price_out)
                 n += 1
         if len(pulls) < 100:
