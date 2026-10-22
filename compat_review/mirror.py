@@ -16,13 +16,18 @@ def _auth(auth_header):
 
 
 def ensure(data_dir, owner, repo, auth_header=None, api_host="github.com"):
-    """Clone the mirror on first use. Returns its path."""
+    """Clone the mirror on first use. Returns its path.
+
+    A bare clone holds branches and tags only; pull request heads come in one at a time with
+    `fetch_pull`. A `--mirror` clone would also fetch every `refs/pull/*` ref the remote advertises,
+    thousands on an old repository, most of them merge commits nothing here reads.
+    """
     dest = path(data_dir, owner, repo)
     if dest.exists():
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
     url = f"https://{api_host}/{owner}/{repo}.git"
-    p = subprocess.run(["git", *_auth(auth_header), "clone", "-q", "--mirror", url, str(dest)],
+    p = subprocess.run(["git", *_auth(auth_header), "clone", "-q", "--bare", url, str(dest)],
                        capture_output=True, text=True, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
     if p.returncode:
         raise RuntimeError(f"git clone --mirror {owner}/{repo}: {p.stderr.strip()[:300]}")
