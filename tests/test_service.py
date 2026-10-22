@@ -214,6 +214,42 @@ class ServiceTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             service.parse_repos(["just-a-name"])
 
+    def test_poller_leaves_stale_pull_requests_alone_until_pushed(self):
+        from datetime import datetime, timedelta, timezone
+
+        def pr(number, sha, days_ago):
+            when = (datetime.now(timezone.utc) - timedelta(days=days_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            return {"number": number, "head": {"sha": sha}, "base": {"ref": "main"}, "title": f"PR {number}",
+                    "body": "", "draft": False, "updated_at": when}
+
+        class StubWorker:
+            pass
+
+        StubWorker.queue = queue.Queue()
+        gh = FakeGitHub()
+        gh.pulls = [pr(1, "aaa", 2), pr(2, "bbb", 400), pr(3, "ccc", 31)]
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = service.Settings(data_dir=Path(tmp), model="m")
+            poller = service.Poller(settings, StubWorker, [("o", "r")], 60, client=lambda s, o, r: (gh, None),
+                                    max_age_days=30)
+            with self.assertLogs("compatibility-review", level="INFO") as logs:
+                self.assertEqual([j.number for j in poller.scan()], [1])
+            self.assertIn("#2, #3", logs.output[0])
+            self.assertEqual(poller.scan(), [])  # stale ones are not re-examined every scan
+            gh.pulls = [pr(1, "aaa", 2), pr(2, "bb2", 0), pr(3, "ccc", 31)]  # a push revives #2
+            self.assertEqual([j.number for j in poller.scan()], [2])
+            # no limit reviews everything
+            everything = service.Poller(settings, StubWorker, [("o", "r")], 60, client=lambda s, o, r: (gh, None),
+                                        max_age_days=0)
+            self.assertEqual([j.number for j in everything.scan()], [1, 2, 3])
+
+    def test_age_days(self):
+        from datetime import datetime, timezone
+
+        now = datetime(2026, 10, 22, tzinfo=timezone.utc)
+        self.assertAlmostEqual(service.age_days("2026-10-12T00:00:00Z", now), 10.0)
+        self.assertIsNone(service.age_days(None))
+
     def test_poller_queues_only_new_heads(self):
         def pr(number, sha, draft=False):
             return {"number": number, "head": {"sha": sha}, "base": {"ref": "main"}, "title": f"PR {number}",

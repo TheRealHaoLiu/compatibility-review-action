@@ -17,6 +17,8 @@ Environment:
   GITHUB_TOKEN              a personal token instead of the App; enough for poll mode and --once
   COMPAT_REVIEW_POLL_REPOS  repositories to poll, comma-separated (same as --poll)
   COMPAT_REVIEW_POLL_INTERVAL seconds between polls (same as --interval); default 60
+  COMPAT_REVIEW_POLL_MAX_AGE_DAYS leave pull requests not updated in this many days alone until
+                            pushed (same as --max-age); default 30, 0 for no limit
   COMPAT_REVIEW_MODEL, COMPAT_REVIEW_API, COMPAT_REVIEW_EFFORT, OPENAI_BASE_URL, OPENAI_API_KEY
   COMPAT_REVIEW_DATA        data directory (mirrors, reviews); default ./data
   COMPAT_REVIEW_MAX_MIRRORS_GB  budget for all mirrors together; least recently used ones are
@@ -329,16 +331,30 @@ class Worker(threading.Thread):
                 self.queue.task_done()
 
 
+def age_days(iso_timestamp, now=None):
+    """Days since a GitHub timestamp such as 2026-10-21T08:12:33Z; None when there is none."""
+    if not iso_timestamp:
+        return None
+    from datetime import datetime, timezone
+
+    then = datetime.fromisoformat(iso_timestamp.replace("Z", "+00:00"))
+    now = now or datetime.now(timezone.utc)
+    return (now - then).total_seconds() / 86400
+
+
 class Poller(threading.Thread):
     """Every interval, list each repository's open pull requests and queue those whose head moved.
 
     A head is remembered once queued, so a pull request that fails to review is not retried until
-    it changes or the service restarts. Stored reviews seed the memory at the first scan.
+    it changes or the service restarts. Stored reviews seed the memory at the first scan. A pull
+    request not updated for more than `max_age_days` is treated as abandoned: remembered, not
+    queued, and reviewed only once a push moves its head.
     """
 
-    def __init__(self, settings, worker, repos, interval, client=client_for_repo):
+    def __init__(self, settings, worker, repos, interval, client=client_for_repo, max_age_days=30):
         super().__init__(daemon=True)
         self.settings, self.worker, self.repos, self.interval, self.client = settings, worker, repos, interval, client
+        self.max_age_days = max_age_days
         self.seen = {}  # (owner, repo, number) -> head sha queued or already reviewed
         self.loaded = set()
         self.stop = threading.Event()
@@ -357,6 +373,7 @@ class Poller(threading.Thread):
                 for number, head in reviewed_heads(self.settings, owner, repo).items():
                     self.seen[(owner, repo, number)] = head
                 self.loaded.add((owner, repo))
+            stale = []
             for pr in pulls:
                 key, head = (owner, repo, pr["number"]), pr["head"]["sha"]
                 if self.seen.get(key) == head:
@@ -364,10 +381,18 @@ class Poller(threading.Thread):
                 if pr.get("draft") and self.settings.skip_drafts:
                     continue  # not remembered: reviewed once it is ready
                 self.seen[key] = head
+                age = age_days(pr.get("updated_at"))
+                if self.max_age_days and age is not None and age > self.max_age_days:
+                    stale.append(pr["number"])
+                    continue
                 job = Job(owner, repo, pr["number"], pr["base"]["ref"], pr.get("title") or "", pr.get("body") or "",
                           installation_id=installation_id, draft=bool(pr.get("draft")))
                 self.worker.queue.put(job)
                 queued.append(job)
+            if stale:
+                log.info("%s/%s: %s pull request%s not updated in %s days, left alone until pushed: %s", owner, repo,
+                         len(stale), "" if len(stale) == 1 else "s", self.max_age_days,
+                         ", ".join(f"#{n}" for n in stale[:20]) + (" ..." if len(stale) > 20 else ""))
         return queued
 
     def run(self):
@@ -441,6 +466,10 @@ def main(argv=None):
                          "default: COMPAT_REVIEW_POLL_REPOS)")
     ap.add_argument("--interval", type=int, default=int(os.environ.get("COMPAT_REVIEW_POLL_INTERVAL", "60")),
                     help="seconds between polls (default: COMPAT_REVIEW_POLL_INTERVAL or 60)")
+    ap.add_argument("--max-age", type=float, metavar="DAYS",
+                    default=float(os.environ.get("COMPAT_REVIEW_POLL_MAX_AGE_DAYS", "30")),
+                    help="poll mode: leave pull requests not updated in this many days alone until pushed "
+                         "(default: COMPAT_REVIEW_POLL_MAX_AGE_DAYS or 30; 0 reviews everything)")
     ap.add_argument("--no-webhook", action="store_true", help="poll only: do not listen for webhooks")
     ap.add_argument("--max-mirrors-gb", type=float, metavar="GB",
                     help="budget for all mirrors together (default: COMPAT_REVIEW_MAX_MIRRORS_GB or 50)")
@@ -484,9 +513,10 @@ def main(argv=None):
     log.info("posting %s, data in %s", "on" if settings.post else "off", settings.data_dir)
     poller = None
     if repos:
-        poller = Poller(settings, worker, repos, args.interval)
+        poller = Poller(settings, worker, repos, args.interval, max_age_days=args.max_age)
         poller.start()
-        log.info("polling %s every %ss", ", ".join(f"{o}/{r}" for o, r in repos), args.interval)
+        log.info("polling %s every %ss, pull requests updated within %g days", ", ".join(f"{o}/{r}" for o, r in repos),
+                 args.interval, args.max_age)
     if args.no_webhook:
         try:
             poller.join()
