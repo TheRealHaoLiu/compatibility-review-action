@@ -15,14 +15,15 @@ def run(repo, *args):
                    check=True, capture_output=True)
 
 
-def make_repo(tmp):
+def make_repo(tmp, with_config=True):
     """A bare 'mirror' with main and refs/pull/1/head, built from a working clone."""
     work = Path(tmp) / "work"
-    work.mkdir()
+    work.mkdir(parents=True)
     run(work, "init", "-q", "-b", "main")
     (work / "app").mkdir()
     (work / "app" / "allow.py").write_text("def load(settings):\n    return list(settings.get('ALLOW', []))\n")
-    (work / ".compatibility-review.toml").write_text('ignore = ["docs/**"]\ncontext = "A product."\n')
+    if with_config:
+        (work / ".compatibility-review.toml").write_text('ignore = ["docs/**"]\ncontext = "A product."\n')
     run(work, "add", "-A")
     run(work, "commit", "-q", "-m", "base")
     run(work, "checkout", "-q", "-b", "feature")
@@ -286,6 +287,37 @@ class ServiceTest(unittest.TestCase):
             self.assertAlmostEqual(row["cost_usd"], (1 * 0.1 + 1 * 0.5) / 1e6)
             self.assertEqual(service.rebuild_from_notes(settings, "o", "r", 90, client=client), 0)
             self.assertIsNone(settings.database().find_review("o", "r", 9, "ab" * 32))
+
+    def test_repository_overrides_stand_in_for_a_missing_settings_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = make_repo(tmp, with_config=False)
+            seen = {}
+
+            def reviewer(user, context, *rest):
+                seen["context"] = context
+                return fake_reviewer(user, "A product.", *rest)
+
+            overrides = {"o/r": {"context": "Override product.", "ignore": ["docs/**"]}}
+            settings = service.Settings(data_dir=Path(tmp) / "data", model="m", post=False, repo_overrides=overrides)
+            result = service.handle(service.Job("o", "r", 1, "main", "t", ""), settings, FakeGitHub(), reviewer, mirror=work)
+            self.assertEqual(result["verdict"], "breaking")
+            self.assertEqual(seen["context"], "Override product.\n")
+            # the override's ignore list applies: docs-only PR is Green without the model
+            docs = service.handle(service.Job("o", "r", 2, "main", "docs", ""), settings, FakeGitHub(),
+                                  lambda *a: self.fail("model called"), mirror=work)
+            self.assertEqual(docs["verdict"], "none")
+            # a context_file in the override is the service's own file, read from disk
+            ctx = Path(tmp) / "tower-context.md"
+            ctx.write_text("From a file.\n")
+            settings2 = service.Settings(data_dir=Path(tmp) / "data2", model="m", post=False,
+                                         repo_overrides={"o/r": {"context_file": str(ctx)}})
+            service.handle(service.Job("o", "r", 1, "main", "t", ""), settings2, FakeGitHub(), reviewer, mirror=work)
+            self.assertEqual(seen["context"], "From a file.\n")
+            # the repository's own file wins over the override, key by key
+            work2 = make_repo(Path(tmp) / "second")
+            settings3 = service.Settings(data_dir=Path(tmp) / "data3", model="m", post=False, repo_overrides=overrides)
+            service.handle(service.Job("o", "r", 1, "main", "t", ""), settings3, FakeGitHub(), reviewer, mirror=work2)
+            self.assertEqual(seen["context"], "A product.\n")
 
     def test_clear_tmp_removes_only_extraction_directories(self):
         with tempfile.TemporaryDirectory() as tmp:

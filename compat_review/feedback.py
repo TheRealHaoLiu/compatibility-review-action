@@ -20,8 +20,7 @@ def _resolve_comment(gh, row, out):
     """For a review recovered from the note in a PR description: find the bot's comment for the same diff.
     Returns the row with the comment known, or None when there is no such comment."""
     owner, repo, number = row["owner"], row["repo"], row["number"]
-    data, _ = gh.get_if_changed(f"/repos/{owner}/{repo}/issues/{number}/comments?per_page=100")
-    for c in data or []:
+    for c in gh.comments(owner, repo, number):
         rec = parse_record(c.get("body"))
         if rec and rec.get("diff_sha256") == row.get("diff_sha256"):
             out["resolved_comment_id"], out["resolved_posted_at"] = c["id"], c.get("created_at")

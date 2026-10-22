@@ -75,6 +75,17 @@ class ConfigTest(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 config.load(tmp / "missing.toml")
 
+    def test_repository_overrides(self):
+        with isolated() as tmp:
+            (tmp / "settings.toml").write_text('model = "m"\n\n[repos."o/r"]\ncontext = "Product O."\nignore = ["docs/**", "*.md"]\n\n'
+                                               '[repos."p/q"]\ncontext_file = "q-context.md"\n')
+            cfg = config.load()
+            self.assertEqual(config.repo_overrides(cfg), {"o/r": {"context": "Product O.", "ignore": ["docs/**", "*.md"]},
+                                                          "p/q": {"context_file": "q-context.md"}})
+            self.assertEqual(service.Settings.from_config(cfg).repo_overrides["o/r"]["ignore"], ["docs/**", "*.md"])
+        with isolated():
+            self.assertEqual(config.repo_overrides(config.load()), {})
+
     def test_validation(self):
         with isolated(COMPAT_REVIEW_API="bogus"):
             with self.assertRaises(ValueError) as ctx:

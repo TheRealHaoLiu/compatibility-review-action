@@ -46,6 +46,7 @@ def validators():
         Validator("MAX_MIRRORS_GB", default=50, cast=float, gt=0),
         Validator("FEEDBACK_INTERVAL", default=1800, cast=int, gte=60),
         Validator("REBUILD_DAYS", default=90, cast=float, gte=0),
+        Validator("REPOS", default={}),
         Validator("DASHBOARD_TOKEN", default=None),
         Validator("PRICE_IN_PER_M", default=None),
         Validator("PRICE_OUT_PER_M", default=None),
@@ -109,6 +110,26 @@ def repos(cfg):
     if isinstance(v, (list, tuple)):
         return [str(x).strip() for x in v if str(x).strip()]
     return [x for x in str(v).replace(",", " ").split() if x]
+
+
+def repo_overrides(cfg):
+    """Per-repository settings from `[repos."owner/repo"]` tables: context, context_file, ignore.
+
+    They stand in for a repository's own .compatibility-review.toml when it has none, key by key;
+    a key present in the repository's file wins.
+    """
+    out = {}
+    for name, table in dict(cfg.get("REPOS") or {}).items():
+        table = dict(table or {})
+        over = {}
+        if table.get("context"):
+            over["context"] = str(table["context"])
+        if table.get("context_file"):
+            over["context_file"] = str(table["context_file"])
+        if table.get("ignore") is not None:
+            over["ignore"] = [str(g) for g in table["ignore"]]
+        out[str(name)] = over
+    return out
 
 
 def private_key(cfg):

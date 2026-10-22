@@ -22,6 +22,9 @@ class FakeGitHub:
             return None, etag
         return data, current
 
+    def comments(self, owner, repo, number):
+        return list(self.table.get(f"/repos/{owner}/{repo}/issues/{number}/comments", ([], None))[0])
+
 
 def row(**over):
     base = {"id": 1, "owner": "o", "repo": "r", "number": 5, "comment_id": 900, "posted_at": "2026-10-22T10:00:00+00:00",

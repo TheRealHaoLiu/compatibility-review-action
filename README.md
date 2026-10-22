@@ -141,6 +141,16 @@ ignore = [".github/**", "**/tests/**", "docs/**", "*.md"]
 
 Without the file, the generic product paragraph in `compat_review/context.md` is used and nothing is ignored. The service reads the file at the merge base of the change, so a PR cannot change its own review settings.
 
+The same two keys can be set on the service side instead, in its `settings.toml`, for a repository that has no file of its own or does not have it yet on the branch under review:
+
+```toml
+[repos."owner/repo"]
+context = """A paragraph about the product and who installs it."""   # or context_file = "a file on the service's machine"
+ignore = [".github/**", "docs/**", "*.md"]
+```
+
+A key in the repository's own file wins over the service's, key by key.
+
 ## Layout
 
 | Path | What it is |

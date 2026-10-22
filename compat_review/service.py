@@ -37,7 +37,7 @@ import tempfile
 import threading
 import tomllib
 import urllib.parse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 try:
     import fcntl
@@ -74,6 +74,7 @@ class Settings:
     private_key: str | None = None
     webhook_secret: str | None = None
     token: str | None = None
+    repo_overrides: dict = field(default_factory=dict)
     db: object = None
 
     def database(self):
@@ -91,7 +92,8 @@ class Settings:
                    price_in=config.price(cfg, "PRICE_IN_PER_M"), price_out=config.price(cfg, "PRICE_OUT_PER_M"),
                    feedback_interval=int(cfg.FEEDBACK_INTERVAL), dashboard_token=cfg.DASHBOARD_TOKEN or None,
                    app_id=str(cfg.GITHUB_APP_ID) if cfg.GITHUB_APP_ID else None, private_key=config.private_key(cfg),
-                   webhook_secret=cfg.GITHUB_WEBHOOK_SECRET or None, token=cfg.GITHUB_TOKEN or None)
+                   webhook_secret=cfg.GITHUB_WEBHOOK_SECRET or None, token=cfg.GITHUB_TOKEN or None,
+                   repo_overrides=config.repo_overrides(cfg))
 
 
 @dataclass
@@ -308,7 +310,9 @@ def _review(job, settings, gh, reviewer, mirror):
         log.info("%s/%s#%s: diff %s already reviewed", job.owner, job.repo, job.number, diff_sha[:12])
         return None
 
-    cfg = tomllib.loads(read_config(mirror, merge_base))
+    # the repository's own .compatibility-review.toml at the merge base; the service's per-repository
+    # override stands in for each key it lacks
+    cfg = {**settings.repo_overrides.get(f"{job.owner}/{job.repo}", {}), **tomllib.loads(read_config(mirror, merge_base))}
     ignore = cfg.get("ignore", [])
     skipped = scope.out_of_scope(diff, ignore)
     if skipped:
@@ -322,7 +326,10 @@ def _review(job, settings, gh, reviewer, mirror):
         if cfg.get("context"):
             context = cfg["context"].strip() + "\n"
         elif cfg.get("context_file"):
-            context = context_file(mirror, merge_base, cfg["context_file"])
+            if cfg.get("context_file") == settings.repo_overrides.get(f"{job.owner}/{job.repo}", {}).get("context_file"):
+                context = Path(cfg["context_file"]).read_text()  # the service's file, not the repository's
+            else:
+                context = context_file(mirror, merge_base, cfg["context_file"])
         else:
             context = (Path(__file__).resolve().parent / "context.md").read_text()
         result = reviewer(user, context, settings.model, settings.api, settings.base_url, settings.effort)

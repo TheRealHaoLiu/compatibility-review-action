@@ -117,8 +117,19 @@ class GitHub:
     def create_comment(self, owner, repo, number, body):
         return self.request("POST", f"/repos/{owner}/{repo}/issues/{number}/comments", {"body": body})
 
+    def paged(self, path):
+        """Every item of a list endpoint, one request per hundred."""
+        out, page, sep = [], 1, "&" if "?" in path else "?"
+        while True:
+            batch = self.request("GET", f"{path}{sep}per_page=100&page={page}")
+            out.extend(batch)
+            if len(batch) < 100:
+                return out
+            page += 1
+
     def comments(self, owner, repo, number):
-        return self.request("GET", f"/repos/{owner}/{repo}/issues/{number}/comments?per_page=100")
+        """All issue comments on a pull request, oldest first, however long the thread."""
+        return self.paged(f"/repos/{owner}/{repo}/issues/{number}/comments")
 
     def reactions(self, owner, repo, comment_id):
         return self.request("GET", f"/repos/{owner}/{repo}/issues/comments/{comment_id}/reactions?per_page=100")

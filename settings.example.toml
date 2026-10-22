@@ -34,6 +34,13 @@ feedback_interval = 1800             # seconds between feedback refreshes of rec
 rebuild_days = 90                    # at startup, rebuild the database from the notes on pull requests updated this recently; 0 = off
 # dashboard_token = "..."            # if set, the dashboard and exports require ?token= or a Bearer header
 
+# Per-repository settings, for repositories that have no .compatibility-review.toml of their own (or
+# not yet on the branch under review). A key in the repository's own file wins over the one here.
+# [repos."owner/repo"]
+# context = """A paragraph about the product and who installs it, appended to the prompt."""
+# context_file = "owner-repo-context.md"   # a file on this machine, instead of context
+# ignore = [".github/**", "docs/**", "*.md"]
+
 # GitHub: a personal token (enough for poll mode and --once) or an App (webhook mode; works for polling too)
 # github_token = "..."               # secret: put it in .secrets.toml
 # github_app_id = 12345
