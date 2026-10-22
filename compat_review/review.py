@@ -34,9 +34,7 @@ def load_assets(context_text, enriched=True):
 
 def _headers(key):
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
-    extra = os.environ.get("COMPAT_REVIEW_HEADERS")
-    if extra:
-        headers.update(json.loads(extra))
+    headers.update(config.headers(config.current()))
     return headers
 
 
@@ -47,8 +45,8 @@ def _post(url, body, headers, timeout):
 
 
 def call_responses(model, system, user, schema, base_url=None, effort=None, timeout=300):
-    base = (base_url or os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com").rstrip("/")
-    key = os.environ.get("OPENAI_API_KEY", "")
+    base = (base_url or config.current().BASE_URL or "https://api.openai.com").rstrip("/")
+    key = config.current().API_KEY or ""
     body = {
         "model": model,
         "instructions": system,
@@ -71,8 +69,8 @@ def call_responses(model, system, user, schema, base_url=None, effort=None, time
 
 
 def call_chat(model, system, user, schema, base_url=None, effort=None, timeout=300):
-    base = (base_url or os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com").rstrip("/")
-    key = os.environ.get("OPENAI_API_KEY", "")
+    base = (base_url or config.current().BASE_URL or "https://api.openai.com").rstrip("/")
+    key = config.current().API_KEY or ""
     body = {
         "model": model,
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
@@ -96,7 +94,8 @@ def call_chat(model, system, user, schema, base_url=None, effort=None, timeout=3
 def call_anthropic(model, system, user, schema, base_url=None, effort=None, timeout=300):
     import anthropic
 
-    client = anthropic.Anthropic(base_url=base_url, max_retries=0, timeout=timeout)
+    client = anthropic.Anthropic(api_key=config.current().ANTHROPIC_API_KEY or None, base_url=base_url,
+                                 max_retries=0, timeout=timeout)
     output_config = {"format": {"type": "json_schema", "schema": schema}}
     if effort:
         output_config["effort"] = effort

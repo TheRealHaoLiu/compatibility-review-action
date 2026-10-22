@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# compatibility-review local configuration
+.secrets.toml
+settings.local.toml

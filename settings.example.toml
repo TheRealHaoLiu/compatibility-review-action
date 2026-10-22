@@ -1,0 +1,37 @@
+# compatibility-review settings.
+#
+# Copy to settings.toml in the directory you run from (or any parent of it), or pass --config FILE.
+# Put tokens in .secrets.toml, same format, which git ignores. Every key is also an environment
+# variable with the prefix COMPAT_REVIEW_ (COMPAT_REVIEW_MODEL, COMPAT_REVIEW_POLL_REPOS, ...),
+# which overrides the file; the conventional GITHUB_TOKEN, GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY,
+# GITHUB_APP_PRIVATE_KEY_FILE, GITHUB_WEBHOOK_SECRET, OPENAI_BASE_URL, OPENAI_API_KEY,
+# ANTHROPIC_API_KEY and PORT are honored as well. Command-line flags override everything.
+
+# The model
+model = "your-model-name"            # required
+api = "responses"                    # responses | chat | anthropic
+effort = "medium"                    # low | medium | high
+base_url = "https://your-endpoint"   # any OpenAI-compatible gateway; for api = "anthropic", the Anthropic base URL
+# api_key = "..."                    # better in .secrets.toml
+# headers = { "x-extra-header" = "value" }   # extra request headers a gateway needs
+timeout = 300                        # seconds per model call
+attempts = 4                         # tries per review on retryable errors
+# price_in_per_m = 0.10              # dollars per million input tokens, for the dashboard's costs
+# price_out_per_m = 0.50             # dollars per million output tokens
+
+# The service
+data = "data"                        # mirrors, the database, extraction space
+port = 8000
+poll_repos = []                      # ["owner/repo", ...] for poll mode; empty for webhook mode only
+poll_interval = 60                   # seconds between polls
+poll_max_age_days = 7                # pull requests not updated in this many days are left alone until pushed; 0 reviews all
+skip_drafts = true
+max_mirrors_gb = 50                  # least recently used mirrors are deleted past this
+feedback_interval = 1800             # seconds between feedback refreshes of recently posted reviews
+# dashboard_token = "..."            # if set, the dashboard and exports require ?token= or a Bearer header
+
+# GitHub: a personal token (enough for poll mode and --once) or an App (webhook mode; works for polling too)
+# github_token = "..."               # better in .secrets.toml
+# github_app_id = 12345
+# github_app_private_key_file = "app.pem"
+# github_webhook_secret = "..."      # better in .secrets.toml

@@ -18,14 +18,18 @@ A CI bot that reads a pull request and appends an upgrade-compatibility note to 
 - `docs/` is the published summary of v9.
 - The evaluation harness and its data live in a private repository, because the benchmark references changes that had not shipped when they were labeled.
 
+## Configuration
+
+Configuration goes through [Dynaconf](https://www.dynaconf.com/). Copy `settings.example.toml` to `settings.toml` in the directory you run from, or any parent of it, and put tokens in `.secrets.toml` in the same format, which git ignores. Every key is also an environment variable with the prefix `COMPAT_REVIEW_`, which overrides the file: `COMPAT_REVIEW_MODEL`, `COMPAT_REVIEW_POLL_REPOS`, and so on. The conventional `GITHUB_TOKEN`, `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_PRIVATE_KEY_FILE`, `GITHUB_WEBHOOK_SECRET`, `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `PORT` are honored when the prefixed form is absent. Command-line flags override everything, and `--config FILE` names a settings file explicitly. The example file documents every key; a value that fails validation stops the program at startup with a message naming it.
+
 ## Run the service
 
-The service reviews each new diff of a pull request once, writes the note into the PR description, and posts one gradable comment per review. One process, standard library plus PyJWT, with bare mirrors of the repositories it reviews under its data directory. It learns about pull requests in one of two ways, or both at once:
+The service reviews each new diff of a pull request once, writes the note into the PR description, and posts one gradable comment per review. One process, with Dynaconf and PyJWT as its dependencies, and bare mirrors of the repositories it reviews under its data directory. It learns about pull requests in one of two ways, or both at once:
 
 - **Poll mode** lists the open pull requests of named repositories every interval and reviews those whose head commit it has not seen. It needs a token and nothing else: no App, no public endpoint. Start here.
 - **Webhook mode** receives `pull_request` events as a GitHub App, so a review starts seconds after a push. It needs an App registration and a reachable `/webhook` URL.
 
-Common to both:
+Common to both, as environment variables here; the same keys go in `settings.toml`:
 
 ```sh
 pip install ".[service]"
@@ -135,6 +139,8 @@ Without the file, the generic product paragraph in `compat_review/context.md` is
 | `compat_review/change.py` | Diff from the merge base, tree extraction, the assembled input |
 | `compat_review/review.py` | The model call (Responses, Chat Completions, or Anthropic Messages) |
 | `compat_review/cli.py` | `compatibility-review`: one change in a checkout |
+| `compat_review/config.py` | The configuration: Dynaconf, every key with its default and validation |
+| `settings.example.toml` | Every setting, documented |
 | `compat_review/service.py` | `compatibility-review-service`: the poller, the webhook server, the worker, the feedback thread, the dashboard routes |
 | `compat_review/db.py` | The SQLite record of reviews and feedback |
 | `compat_review/feedback.py` | Reactions, replies, and the pull request's fate, fetched with conditional requests |

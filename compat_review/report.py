@@ -15,6 +15,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import config
 from .db import DB
 
 COLUMNS = [
@@ -214,9 +215,16 @@ def render_json(rows):
 
 
 def main(argv=None):
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config")
+    try:
+        cfg = config.load(pre.parse_known_args(argv)[0].config)
+    except (OSError, ValueError) as e:
+        sys.exit(f"configuration: {e}")
     ap = argparse.ArgumentParser(prog="compatibility-review-report", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--data", default=os.environ.get("COMPAT_REVIEW_DATA", "data"))
+    ap.add_argument("--config", metavar="FILE", help="settings file (default: settings.toml, found from the working directory up)")
+    ap.add_argument("--data", default=cfg.DATA, help="data directory (default: the data setting, ./data)")
     ap.add_argument("--since", type=float, metavar="DAYS", help="only reviews from the last DAYS days")
     ap.add_argument("--repo", metavar="OWNER/REPO")
     ap.add_argument("--format", choices=["md", "csv", "json"], default="md")

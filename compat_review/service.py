@@ -16,21 +16,12 @@ Every review goes into the SQLite database under the data directory, a backgroun
 the feedback on posted reviews current (reactions, replies, the pull request's fate), and the
 HTTP server serves a live dashboard at / with CSV, JSON and Markdown exports.
 
-Environment:
-  GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY (PEM) or GITHUB_APP_PRIVATE_KEY_FILE, GITHUB_WEBHOOK_SECRET
-  GITHUB_TOKEN              a personal token instead of the App; enough for poll mode and --once
-  COMPAT_REVIEW_PRICE_IN_PER_M, COMPAT_REVIEW_PRICE_OUT_PER_M  dollars per million tokens, for costs
-  COMPAT_REVIEW_FEEDBACK_INTERVAL  seconds between feedback refreshes of recent reviews; default 1800
-  COMPAT_REVIEW_DASHBOARD_TOKEN  if set, the dashboard and exports need ?token= or a Bearer header
-  COMPAT_REVIEW_POLL_REPOS  repositories to poll, comma-separated (same as --poll)
-  COMPAT_REVIEW_POLL_INTERVAL seconds between polls (same as --interval); default 60
-  COMPAT_REVIEW_POLL_MAX_AGE_DAYS leave pull requests not updated in this many days alone until
-                            pushed (same as --max-age); default 7, 0 for no limit
-  COMPAT_REVIEW_MODEL, COMPAT_REVIEW_API, COMPAT_REVIEW_EFFORT, OPENAI_BASE_URL, OPENAI_API_KEY
-  COMPAT_REVIEW_DATA        data directory (mirrors, reviews); default ./data
-  COMPAT_REVIEW_MAX_MIRRORS_GB  budget for all mirrors together; least recently used ones are
-                            deleted past it and cloned again when needed; default 50
-  COMPAT_REVIEW_SKIP_DRAFTS "0" to review draft pull requests too
+Configuration comes from settings.toml (and .secrets.toml) found from the working directory up, or
+the file given with --config; environment variables with the prefix COMPAT_REVIEW_ override it, and
+the flags below override both. `settings.example.toml` documents every key: model, api, effort,
+base_url, api_key, headers, timeout, attempts, price_in_per_m, price_out_per_m, data, port,
+poll_repos, poll_interval, poll_max_age_days, skip_drafts, max_mirrors_gb, feedback_interval,
+dashboard_token, github_token, github_app_id, github_app_private_key(_file), github_webhook_secret.
 """
 
 import argparse
@@ -55,7 +46,7 @@ except ImportError:  # Windows: no cross-process lock; one process per data dire
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import PROMPT_VERSION, RULE_VERSION, enrich, feedback, post, report, review, scope
+from . import PROMPT_VERSION, RULE_VERSION, config, enrich, feedback, post, report, review, scope
 from .change import build_input, diff_from_merge_base, extract_tree, read_config, context_file
 from .db import DB, utcnow
 from .github import GitHub, GitHubError
@@ -91,25 +82,16 @@ class Settings:
         return self.db
 
     @classmethod
-    def from_env(cls, data_dir=None, post=True, max_mirrors_gb=None):
-        key = os.environ.get("GITHUB_APP_PRIVATE_KEY")
-        if not key and os.environ.get("GITHUB_APP_PRIVATE_KEY_FILE"):
-            key = Path(os.environ["GITHUB_APP_PRIVATE_KEY_FILE"]).read_text()
-        gb = max_mirrors_gb if max_mirrors_gb is not None else float(os.environ.get("COMPAT_REVIEW_MAX_MIRRORS_GB", "50"))
-        price = lambda name: float(os.environ[name]) if os.environ.get(name) else None  # noqa: E731
-        return cls(data_dir=Path(data_dir or os.environ.get("COMPAT_REVIEW_DATA", "data")),
-                   model=os.environ.get("COMPAT_REVIEW_MODEL", ""),
-                   api=os.environ.get("COMPAT_REVIEW_API", "responses"),
-                   effort=os.environ.get("COMPAT_REVIEW_EFFORT", "medium"),
-                   base_url=os.environ.get("COMPAT_REVIEW_BASE_URL"), post=post,
-                   skip_drafts=os.environ.get("COMPAT_REVIEW_SKIP_DRAFTS", "1") != "0",
+    def from_config(cls, cfg, post=True, data_dir=None, max_mirrors_gb=None):
+        """Settings from a loaded configuration; `data_dir` and `max_mirrors_gb` are flag overrides."""
+        gb = float(max_mirrors_gb if max_mirrors_gb is not None else cfg.MAX_MIRRORS_GB)
+        return cls(data_dir=Path(data_dir or cfg.DATA), model=cfg.MODEL or "", api=cfg.API, effort=cfg.EFFORT,
+                   base_url=cfg.BASE_URL or None, post=post, skip_drafts=bool(cfg.SKIP_DRAFTS),
                    max_mirror_bytes=int(gb * 1024**3),
-                   price_in=price("COMPAT_REVIEW_PRICE_IN_PER_M"), price_out=price("COMPAT_REVIEW_PRICE_OUT_PER_M"),
-                   feedback_interval=int(os.environ.get("COMPAT_REVIEW_FEEDBACK_INTERVAL", "1800")),
-                   dashboard_token=os.environ.get("COMPAT_REVIEW_DASHBOARD_TOKEN") or None,
-                   app_id=os.environ.get("GITHUB_APP_ID"), private_key=key,
-                   webhook_secret=os.environ.get("GITHUB_WEBHOOK_SECRET"),
-                   token=os.environ.get("GITHUB_TOKEN"))
+                   price_in=config.price(cfg, "PRICE_IN_PER_M"), price_out=config.price(cfg, "PRICE_OUT_PER_M"),
+                   feedback_interval=int(cfg.FEEDBACK_INTERVAL), dashboard_token=cfg.DASHBOARD_TOKEN or None,
+                   app_id=str(cfg.GITHUB_APP_ID) if cfg.GITHUB_APP_ID else None, private_key=config.private_key(cfg),
+                   webhook_secret=cfg.GITHUB_WEBHOOK_SECRET or None, token=cfg.GITHUB_TOKEN or None)
 
 
 @dataclass
@@ -547,30 +529,36 @@ def make_handler(settings, worker, webhook=True):
 
 
 def main(argv=None):
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config")
+    try:
+        cfg = config.load(pre.parse_known_args(argv)[0].config)
+    except (OSError, ValueError) as e:
+        sys.exit(f"configuration: {e}")
     ap = argparse.ArgumentParser(prog="compatibility-review-service", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
-    ap.add_argument("--data", help="data directory (default: COMPAT_REVIEW_DATA or ./data)")
+    ap.add_argument("--config", metavar="FILE", help="settings file (default: settings.toml, found from the working directory up)")
+    ap.add_argument("--port", type=int, default=cfg.PORT, help="(default: the port setting, 8000)")
+    ap.add_argument("--data", help="data directory (default: the data setting, ./data)")
     ap.add_argument("--no-post", action="store_true", help="review and store results, write nothing to GitHub")
     ap.add_argument("--once", metavar="OWNER/REPO#N", help="review one pull request now and exit; no server")
     ap.add_argument("--poll", metavar="OWNER/REPO", action="append",
                     help="poll this repository's open pull requests (repeat or comma-separate; "
-                         "default: COMPAT_REVIEW_POLL_REPOS)")
-    ap.add_argument("--interval", type=int, default=int(os.environ.get("COMPAT_REVIEW_POLL_INTERVAL", "60")),
-                    help="seconds between polls (default: COMPAT_REVIEW_POLL_INTERVAL or 60)")
-    ap.add_argument("--max-age", type=float, metavar="DAYS",
-                    default=float(os.environ.get("COMPAT_REVIEW_POLL_MAX_AGE_DAYS", "7")),
+                         "default: the poll_repos setting)")
+    ap.add_argument("--interval", type=int, default=cfg.POLL_INTERVAL,
+                    help="seconds between polls (default: the poll_interval setting, 60)")
+    ap.add_argument("--max-age", type=float, metavar="DAYS", default=cfg.POLL_MAX_AGE_DAYS,
                     help="poll mode: leave pull requests not updated in this many days alone until pushed "
-                         "(default: COMPAT_REVIEW_POLL_MAX_AGE_DAYS or 7; 0 reviews everything)")
+                         "(default: the poll_max_age_days setting, 7; 0 reviews everything)")
     ap.add_argument("--no-webhook", action="store_true", help="poll only: POST /webhook is not accepted")
     ap.add_argument("--no-feedback", action="store_true", help="do not refresh feedback on posted reviews")
     ap.add_argument("--max-mirrors-gb", type=float, metavar="GB",
-                    help="budget for all mirrors together (default: COMPAT_REVIEW_MAX_MIRRORS_GB or 50)")
+                    help="budget for all mirrors together (default: the max_mirrors_gb setting, 50)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    settings = Settings.from_env(args.data, post=not args.no_post, max_mirrors_gb=args.max_mirrors_gb)
+    settings = Settings.from_config(cfg, post=not args.no_post, data_dir=args.data, max_mirrors_gb=args.max_mirrors_gb)
     if not settings.model:
-        ap.error("COMPAT_REVIEW_MODEL is required")
+        ap.error("a model is required: `model` in settings.toml or COMPAT_REVIEW_MODEL")
     if settings.max_mirror_bytes <= 0:
         ap.error("--max-mirrors-gb must be positive")
     with DataLock(settings.data_dir):  # never while another process holds a tree extracted here
@@ -582,13 +570,13 @@ def main(argv=None):
         log.info("imported %s review%s from JSON files into the database", imported, "" if imported == 1 else "s")
     log.info("mirrors use %.1f GB of a %g GB budget", mirrors_size_gb(settings), settings.max_mirror_bytes / 1024**3)
     if settings.price_in is None or settings.price_out is None:
-        log.info("no token prices configured (COMPAT_REVIEW_PRICE_IN_PER_M / _OUT_PER_M): costs will show as n/a")
+        log.info("no token prices configured (price_in_per_m / price_out_per_m): costs will show as n/a")
     try:
-        repos = parse_repos(args.poll or [os.environ.get("COMPAT_REVIEW_POLL_REPOS", "")])
+        repos = parse_repos(args.poll or config.repos(cfg))
     except ValueError as e:
         ap.error(str(e))
     if args.no_webhook and not repos:
-        ap.error("--no-webhook needs --poll OWNER/REPO (or COMPAT_REVIEW_POLL_REPOS)")
+        ap.error("--no-webhook needs --poll OWNER/REPO (or the poll_repos setting)")
     if args.interval < 1:
         ap.error("--interval must be at least 1 second")
 

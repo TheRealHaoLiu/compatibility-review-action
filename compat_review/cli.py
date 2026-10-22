@@ -14,11 +14,18 @@ import sys
 import tempfile
 from pathlib import Path
 
+from . import config
 from . import enrich, review, scope
 from .change import build_input, diff_from_merge_base, extract_tree
 
 
 def main(argv=None):
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config")
+    try:
+        cfg = config.load(pre.parse_known_args(argv)[0].config)
+    except (OSError, ValueError) as e:
+        sys.exit(f"configuration: {e}")
     ap = argparse.ArgumentParser(prog="compatibility-review", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--repo", default=".", help="path to the git checkout")
@@ -27,15 +34,16 @@ def main(argv=None):
     ap.add_argument("--title", default="", help="pull request title")
     ap.add_argument("--branch", help="target branch name shown to the model (default: --base)")
     ap.add_argument("--body-file", help="file holding the author's description")
-    ap.add_argument("--model", default=os.environ.get("COMPAT_REVIEW_MODEL"), help="model name at the endpoint")
-    ap.add_argument("--api", choices=sorted(review.CALLS), default=os.environ.get("COMPAT_REVIEW_API", "responses"))
-    ap.add_argument("--base-url", help="endpoint base URL (default: OPENAI_BASE_URL / ANTHROPIC_BASE_URL)")
-    ap.add_argument("--effort", choices=["low", "medium", "high"], default="medium")
+    ap.add_argument("--model", default=cfg.MODEL or None, help="model name at the endpoint")
+    ap.add_argument("--api", choices=sorted(review.CALLS), default=cfg.API)
+    ap.add_argument("--base-url", help="endpoint base URL (default: the base_url setting or OPENAI_BASE_URL)")
+    ap.add_argument("--effort", choices=["low", "medium", "high"], default=cfg.EFFORT)
     ap.add_argument("--no-enrich", action="store_true", help="send the diff without repository facts")
     ap.add_argument("--dry-run", action="store_true", help="print the assembled input; no model call")
     ap.add_argument("--out", help="write the result JSON here as well as to stdout")
-    ap.add_argument("--timeout", type=float, default=300)
-    ap.add_argument("--attempts", type=int, default=4)
+    ap.add_argument("--timeout", type=float, default=cfg.TIMEOUT)
+    ap.add_argument("--attempts", type=int, default=cfg.ATTEMPTS)
+    ap.add_argument("--config", metavar="FILE", help="settings file (default: settings.toml, found from the working directory up)")
     args = ap.parse_args(argv)
 
     repo = Path(args.repo).resolve()
