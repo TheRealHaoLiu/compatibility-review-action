@@ -19,6 +19,8 @@ Environment:
   COMPAT_REVIEW_POLL_INTERVAL seconds between polls (same as --interval); default 60
   COMPAT_REVIEW_MODEL, COMPAT_REVIEW_API, COMPAT_REVIEW_EFFORT, OPENAI_BASE_URL, OPENAI_API_KEY
   COMPAT_REVIEW_DATA        data directory (mirrors, reviews); default ./data
+  COMPAT_REVIEW_MAX_MIRRORS_GB  budget for all mirrors together; least recently used ones are
+                            deleted past it and cloned again when needed; default 50
   COMPAT_REVIEW_SKIP_DRAFTS "0" to review draft pull requests too
 """
 
@@ -29,6 +31,7 @@ import json
 import logging
 import os
 import queue
+import shutil
 import sys
 import tempfile
 import threading
@@ -55,22 +58,25 @@ class Settings:
     base_url: str | None = None
     post: bool = True
     skip_drafts: bool = True
+    max_mirror_bytes: int = 50 * 1024**3
     app_id: str | None = None
     private_key: str | None = None
     webhook_secret: str | None = None
     token: str | None = None
 
     @classmethod
-    def from_env(cls, data_dir=None, post=True):
+    def from_env(cls, data_dir=None, post=True, max_mirrors_gb=None):
         key = os.environ.get("GITHUB_APP_PRIVATE_KEY")
         if not key and os.environ.get("GITHUB_APP_PRIVATE_KEY_FILE"):
             key = Path(os.environ["GITHUB_APP_PRIVATE_KEY_FILE"]).read_text()
+        gb = max_mirrors_gb if max_mirrors_gb is not None else float(os.environ.get("COMPAT_REVIEW_MAX_MIRRORS_GB", "50"))
         return cls(data_dir=Path(data_dir or os.environ.get("COMPAT_REVIEW_DATA", "data")),
                    model=os.environ.get("COMPAT_REVIEW_MODEL", ""),
                    api=os.environ.get("COMPAT_REVIEW_API", "responses"),
                    effort=os.environ.get("COMPAT_REVIEW_EFFORT", "medium"),
                    base_url=os.environ.get("COMPAT_REVIEW_BASE_URL"), post=post,
                    skip_drafts=os.environ.get("COMPAT_REVIEW_SKIP_DRAFTS", "1") != "0",
+                   max_mirror_bytes=int(gb * 1024**3),
                    app_id=os.environ.get("GITHUB_APP_ID"), private_key=key,
                    webhook_secret=os.environ.get("GITHUB_WEBHOOK_SECRET"),
                    token=os.environ.get("GITHUB_TOKEN"))
@@ -145,6 +151,30 @@ def reviews_dir(settings, owner, repo):
     return d
 
 
+def tmp_dir(settings):
+    """Where trees are extracted: under the data directory, so a hard kill leaks nothing elsewhere."""
+    d = settings.data_dir / "tmp"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def clear_tmp(settings):
+    """Remove extraction directories left by a previous process. Returns how many."""
+    root = tmp_dir(settings).resolve()
+    n = 0
+    for p in root.iterdir():
+        if p.name.startswith("tree-") and not p.is_symlink() and p.is_dir() and p.resolve().parent == root:
+            shutil.rmtree(p)
+            n += 1
+    return n
+
+
+def mirrors_size_gb(settings):
+    root = settings.data_dir / "mirrors"
+    return sum(mirrors.size(p) for p in root.iterdir() if mirrors.is_mirror(settings.data_dir, p)) / 1024**3 \
+        if root.is_dir() else 0.0
+
+
 def reviewed_heads(settings, owner, repo):
     """{number: head sha} of the stored reviews, so a restart does not fetch again what it reviewed.
 
@@ -175,17 +205,36 @@ def publish(gh, job, result, out):
 
 
 def handle(job, settings, gh=None, reviewer=review.review, mirror=None):
-    """Review one pull request end to end. Returns the result, or None when nothing was reviewed."""
+    """Review one pull request end to end. Returns the result, or None when nothing was reviewed.
+
+    With `mirror` given (tests), the PR head is expected at refs/pull/<n>/head and left in place.
+    Otherwise the service fetches it into the repository's mirror, and whatever happens next, drops
+    the ref afterwards and brings the mirrors back under budget.
+    """
     if job.draft and settings.skip_drafts:
         log.info("%s/%s#%s: draft, skipped", job.owner, job.repo, job.number)
         return None
     gh = gh or client(settings, job)
-    if mirror is None:
-        auth = gh.git_auth_header()
-        mirror = mirrors.ensure(settings.data_dir, job.owner, job.repo, auth)
-        head_ref = mirrors.fetch_pull(mirror, job.number, auth)
-    else:
-        head_ref = f"refs/pull/{job.number}/head"
+    if mirror is not None:
+        return _review(job, settings, gh, reviewer, mirror)
+    auth = gh.git_auth_header()
+    mirror = mirrors.ensure(settings.data_dir, job.owner, job.repo, auth)
+    mirrors.fetch_pull(mirror, job.number, auth)
+    try:
+        return _review(job, settings, gh, reviewer, mirror)
+    finally:
+        try:
+            mirrors.release_pull(mirror, job.number)
+            deleted, total = mirrors.enforce_budget(settings.data_dir, settings.max_mirror_bytes, keep=mirror)
+            if deleted:
+                log.warning("mirrors over budget: deleted %s, %.1f GB remain",
+                            ", ".join(p.name for p in deleted), total / 1024**3)
+        except Exception:  # noqa: BLE001 - housekeeping must not mask the review's outcome
+            log.exception("%s/%s#%s: housekeeping failed", job.owner, job.repo, job.number)
+
+
+def _review(job, settings, gh, reviewer, mirror):
+    head_ref = f"refs/pull/{job.number}/head"
     merge_base, head_sha, diff = diff_from_merge_base(mirror, f"refs/heads/{job.base_ref}", head_ref)
     diff_sha = hashlib.sha256(diff.encode()).hexdigest()
     out = reviews_dir(settings, job.owner, job.repo) / f"{job.number}-{diff_sha[:12]}.json"
@@ -205,7 +254,7 @@ def handle(job, settings, gh=None, reviewer=review.review, mirror=None):
         result = scope.skipped_result(skipped)
         result["_meta"].update({"prompt": PROMPT_VERSION, "rule": RULE_VERSION, "model": settings.model})
     else:
-        with tempfile.TemporaryDirectory(prefix="compat-review-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="tree-", dir=tmp_dir(settings)) as tmp:
             extract_tree(mirror, merge_base, tmp)
             facts = enrich.facts(diff, tmp, lambda p: scope.is_test(p, ignore))
         user = build_input(job.base_ref, job.title, job.body, diff, facts)
@@ -355,11 +404,19 @@ def main(argv=None):
     ap.add_argument("--interval", type=int, default=int(os.environ.get("COMPAT_REVIEW_POLL_INTERVAL", "60")),
                     help="seconds between polls (default: COMPAT_REVIEW_POLL_INTERVAL or 60)")
     ap.add_argument("--no-webhook", action="store_true", help="poll only: do not listen for webhooks")
+    ap.add_argument("--max-mirrors-gb", type=float, metavar="GB",
+                    help="budget for all mirrors together (default: COMPAT_REVIEW_MAX_MIRRORS_GB or 50)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    settings = Settings.from_env(args.data, post=not args.no_post)
+    settings = Settings.from_env(args.data, post=not args.no_post, max_mirrors_gb=args.max_mirrors_gb)
     if not settings.model:
         ap.error("COMPAT_REVIEW_MODEL is required")
+    if settings.max_mirror_bytes <= 0:
+        ap.error("--max-mirrors-gb must be positive")
+    stale = clear_tmp(settings)
+    if stale:
+        log.info("removed %s extraction director%s left by an earlier run", stale, "y" if stale == 1 else "ies")
+    log.info("mirrors use %.1f GB of a %g GB budget", mirrors_size_gb(settings), settings.max_mirror_bytes / 1024**3)
     try:
         repos = parse_repos(args.poll or [os.environ.get("COMPAT_REVIEW_POLL_REPOS", "")])
     except ValueError as e:

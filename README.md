@@ -67,6 +67,14 @@ Fetch the mirror and the PR head, diff from the merge base, repository facts fro
 
 A `Dockerfile` builds the service image; mount `/data` and pass the environment above. With `COMPAT_REVIEW_POLL_REPOS` set, the container polls; with the App variables set, it serves webhooks on port 8000; with both, it does both.
 
+### Storage
+
+The data directory holds three things, and none of them needs watching:
+
+- `mirrors/`: one bare clone per repository, branches and tags only, so the cost is the repository's history once, whatever the number of branches reviewed against. Branches deleted upstream are pruned on every fetch. A pull request's ref is dropped as soon as its review is stored, so the objects it alone kept alive are reclaimed by git's own garbage collection. All mirrors together are kept under a budget, `COMPAT_REVIEW_MAX_MIRRORS_GB` or `--max-mirrors-gb` (default 50): past it, the least recently used mirrors are deleted and cloned again on their next review. The service logs the usage against the budget at startup and whenever it evicts.
+- `reviews/`: one small JSON file per reviewed diff, a few kilobytes each. These are the record the feedback is graded against and are kept.
+- `tmp/`: the tree a review extracts for the repository facts, removed when the review ends. Anything a hard kill leaves here is removed at the next start.
+
 ### What it posts
 
 In the PR description, between `<!-- compatibility-review:begin -->` and `<!-- compatibility-review:end -->`: the verdict, the summary, the setup that stops working and how, and the version and commit reviewed. The section is replaced on each review, so the description holds one note.

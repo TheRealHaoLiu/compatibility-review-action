@@ -149,6 +149,51 @@ class ServiceTest(unittest.TestCase):
         job = service.Job("o", "r", 1, "main", "t", "", draft=True)
         self.assertIsNone(service.handle(job, settings, FakeGitHub(), fake_reviewer, mirror="/nonexistent"))
 
+    def test_fetched_pull_ref_is_released_and_tree_extracted_under_data(self):
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            work = make_repo(tmp)
+            data = Path(tmp) / "data"
+            settings = service.Settings(data_dir=data, model="m", post=False)
+            seen = {}
+            real_extract = service.extract_tree
+
+            def spy_extract(repo, ref, dest):
+                seen["dest"] = Path(dest)
+                real_extract(repo, ref, dest)
+
+            with mock.patch.object(service.mirrors, "ensure", return_value=work), \
+                    mock.patch.object(service.mirrors, "fetch_pull", return_value="refs/pull/1/head"), \
+                    mock.patch.object(service, "extract_tree", side_effect=spy_extract):
+                result = service.handle(service.Job("o", "r", 1, "main", "t", ""), settings, FakeGitHub(), fake_reviewer)
+            self.assertEqual(result["verdict"], "breaking")
+            self.assertEqual(seen["dest"].resolve().parent, (data / "tmp").resolve())
+            self.assertTrue(seen["dest"].name.startswith("tree-"))
+            self.assertEqual(list((data / "tmp").iterdir()), [])  # removed before the model call, never held through it
+            refs = subprocess.run(["git", "-C", str(work), "for-each-ref", "refs/pull/1"], capture_output=True, text=True)
+            self.assertEqual(refs.stdout, "")  # released even though posting was off
+            # a review that fails still releases the ref
+            run(work, "update-ref", "refs/pull/1/head", "feature")
+            with mock.patch.object(service.mirrors, "ensure", return_value=work), \
+                    mock.patch.object(service.mirrors, "fetch_pull", return_value="refs/pull/1/head"), \
+                    self.assertRaises(RuntimeError):
+                service.handle(service.Job("o", "r", 1, "nonexistent-branch", "t", ""), settings, FakeGitHub(), fake_reviewer)
+            refs = subprocess.run(["git", "-C", str(work), "for-each-ref", "refs/pull/1"], capture_output=True, text=True)
+            self.assertEqual(refs.stdout, "")
+
+    def test_clear_tmp_removes_only_extraction_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = service.Settings(data_dir=Path(tmp), model="m")
+            t = service.tmp_dir(settings)
+            (t / "tree-abc").mkdir()
+            (t / "tree-abc" / "f").write_text("x")
+            (t / "tree-def").mkdir()
+            (t / "other").mkdir()
+            (t / "tree-file").write_text("not a directory")
+            self.assertEqual(service.clear_tmp(settings), 2)
+            self.assertEqual(sorted(p.name for p in t.iterdir()), ["other", "tree-file"])
+
     def test_parse_repos(self):
         self.assertEqual(service.parse_repos(["o/r", "a/b, c/d"]), [("o", "r"), ("a", "b"), ("c", "d")])
         self.assertEqual(service.parse_repos([""]), [])
