@@ -388,6 +388,7 @@ class Poller(threading.Thread):
         self.max_age_days = max_age_days
         self.seen = {}  # (owner, repo, number) -> head sha queued or already reviewed
         self.loaded = set()
+        self.tallied = set()  # repositories whose first scan has been logged in full
         self.stop = threading.Event()
 
     def scan(self):
@@ -404,13 +405,16 @@ class Poller(threading.Thread):
                 for number, head in reviewed_heads(self.settings, owner, repo).items():
                     self.seen[(owner, repo, number)] = head
                 self.loaded.add((owner, repo))
-            stale, recovered = [], []
+            first = (owner, repo) not in self.tallied
+            stale, recovered, remembered, drafts = [], [], 0, 0
             db = self.settings.database()
             for pr in pulls:
                 key, head = (owner, repo, pr["number"]), pr["head"]["sha"]
                 if self.seen.get(key) == head:
+                    remembered += 1
                     continue
                 if pr.get("draft") and self.settings.skip_drafts:
+                    drafts += 1
                     continue  # not remembered: reviewed once it is ready
                 self.seen[key] = head
                 rec = post.parse_note_record(pr.get("body"))
@@ -437,6 +441,12 @@ class Poller(threading.Thread):
             if recovered:
                 log.info("%s/%s: %s review%s already on the pull requests, recorded without a fetch", owner, repo,
                          len(recovered), "" if len(recovered) == 1 else "s")
+            if first:  # the first scan says what it made of every open pull request; later ones log only changes
+                mine = [j.number for j in queued if (j.owner, j.repo) == (owner, repo)]
+                log.info("%s/%s: %s open pull request%s: %s at a reviewed head, %s recorded from notes, %s draft%s, "
+                         "%s stale, %s queued", owner, repo, len(pulls), "" if len(pulls) == 1 else "s", remembered,
+                         len(recovered), drafts, "" if drafts == 1 else "s", len(stale), len(mine))
+                self.tallied.add((owner, repo))
         return queued
 
     def run(self):

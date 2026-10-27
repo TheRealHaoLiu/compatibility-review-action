@@ -415,8 +415,11 @@ class ServiceTest(unittest.TestCase):
 
             StubWorker.queue = queue.Queue()
             poller = service.Poller(settings, StubWorker, [("o", "r")], 60, client=lambda s, o, r: (gh, 42))
-            queued = poller.scan()
+            with self.assertLogs(service.log, level="INFO") as logs:
+                queued = poller.scan()
             self.assertEqual([j.number for j in queued], [1, 4])  # 2 is a draft, 3 was reviewed and posted
+            self.assertIn("o/r: 4 open pull requests: 1 at a reviewed head, 0 recorded from notes, 1 draft, 0 stale, 2 queued",
+                          "\n".join(logs.output))  # the first scan accounts for every open pull request
             self.assertEqual((queued[0].installation_id, queued[0].base_ref, queued[0].title), (42, "main", "PR 1"))
             self.assertEqual(StubWorker.queue.qsize(), 2)
             self.assertEqual(poller.scan(), [])
